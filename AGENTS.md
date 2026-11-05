@@ -240,7 +240,7 @@ Desktop，探测超时关闭 stdout 后可能触发 `write EPIPE`。探测脚本
 
 ## Fork 说明（Sakura7301）
 
-本 fork 在 `apps/server` 上增加了**多账号自助注册**（上游把完整多账号 Server 划在仓库边界之外，因此这部分只在本 fork 维护，不要按上游 scope 提交 PR）。账号由 JSON state 的 `accounts` 保存；设备与 token 都记录所属账号，跨账号的设备列表、改名、presence 与 Host 连接一律 fail closed；环境变量账号仍作为启动时创建/重设密码的引导账号；旧的单账号 state（version 1）启动时自动迁移。新增配置：`DSH_SERVER_ALLOW_REGISTRATION`（默认开启）、`DSH_SERVER_REGISTRATION_CODE`、`DSH_SERVER_MAX_ACCOUNTS`。测试：`tests/server.test.ts` 的 "multi-account registration and isolation"。
+本 fork 在 `apps/server` 上增加了**多账号自助注册**（上游把完整多账号 Server 划在仓库边界之外，因此这部分只在本 fork 维护，不要按上游 scope 提交 PR）。账号由 JSON state 的 `accounts` 保存；设备与 token 都记录所属账号，跨账号的设备列表、改名、presence 与 Host 连接一律 fail closed；环境变量账号仍作为启动时创建/重设密码的引导账号；旧的单账号 state（version 1）启动时自动迁移。新增配置：`DSH_SERVER_ALLOW_REGISTRATION`（默认开启）、`DSH_SERVER_REGISTRATION_CODE`、`DSH_SERVER_MAX_ACCOUNTS`。管理员（`role: admin`）由环境变量账号强制指定，可用任意用户名；控制台 `/admin` 提供概览、站点设置、SMTP 与用户管理（`/api/v1/admin/*`，非管理员 403）。自助注册只要求用户名（3–32 位字母/数字/._-），邮箱可选：登录与找回密码都接受「已验证邮箱」，验证码通过 nodemailer 发送（`mailer.ts`，测试用 `Config.sendMail` 注入）。站点信息与 SMTP 保存在 state 的 `settings` 里，`GET /api/v1/site` 匿名可读。测试：`tests/server.test.ts` 的 "multi-account registration and isolation" 与 "administrator console, usernames and email codes"。
 
 本文件面向在当前仓库工作的编码 Agent，记录仓库边界、项目结构、实现状态、验证命令和协作约束。用户产品说明与 Plugin 使用方式见 `README.md`。
 

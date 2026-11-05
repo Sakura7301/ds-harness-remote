@@ -1080,7 +1080,7 @@ describe('multi-account registration and isolation', () => {
     expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password' })).status).toBe(403)
     expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password', code: 'nope' })).status).toBe(403)
     expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'short', code: 'let-me-in' })).status).toBe(400)
-    expect((await request('/auth/register', 'POST', { email: 'not-an-email', password: 'new-test-password', code: 'let-me-in' })).status).toBe(400)
+    expect((await request('/auth/register', 'POST', { email: 'bad name', password: 'new-test-password', code: 'let-me-in' })).status).toBe(400)
     expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password', code: 'let-me-in' })).status).toBe(200)
   })
   it('migrates a single-account state file without losing devices or tokens', async () => {
@@ -1102,5 +1102,78 @@ describe('multi-account registration and isolation', () => {
     expect((await request('/devices', 'GET', undefined, d.accessToken)).status).toBe(200)
     expect((await request('/account/devices', 'GET', undefined, accountToken)).data.items.map((item: { deviceId: string }) => item.deviceId)).toEqual([d.deviceId])
     expect((JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as { version: number }).version).toBe(2)
+  })
+})
+
+describe('administrator console, usernames and email codes', () => {
+  async function startWithMailer() {
+    const sent: { to: string; subject: string; text: string }[] = []
+    await app.close()
+    await start(password, [], { sendMail: async (_config, message) => { sent.push(message) } })
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    return sent
+  }
+  const codeIn = (text: string): string => {
+    const match = /(\d{6})/.exec(text)
+    if (match === null) throw new Error(`no code in mail: ${text}`)
+    return match[1]!
+  }
+  it('makes the environment account the administrator and keeps self-service accounts out of the console', async () => {
+    await startWithMailer()
+    expect((await request('/auth/me', 'GET', undefined, accountToken)).data.isAdmin).toBe(true)
+    const registered = await request('/auth/register', 'POST', { email: 'alice', password: 'alice-test-password' })
+    expect(registered.status).toBe(200)
+    expect(registered.data.isAdmin).toBe(false)
+    expect(registered.data.account).toBe('alice')
+    const userToken = registered.data.token
+    expect((await request('/admin/overview', 'GET', undefined, userToken)).status).toBe(403)
+    const overview = await request('/admin/overview', 'GET', undefined, accountToken)
+    expect(overview.status).toBe(200)
+    expect(overview.data.accounts).toBe(2)
+    expect(overview.data.admins).toBe(1)
+    // A username (not an address) is a valid login identifier.
+    expect((await request('/auth/login', 'POST', { email: 'Alice', password: 'alice-test-password' })).status).toBe(200)
+    // Administrators cannot disable or delete themselves.
+    expect((await request(`/admin/accounts/${encodeURIComponent(account)}/disabled`, 'POST', { disabled: true }, accountToken)).status).toBe(409)
+    expect((await request(`/admin/accounts/${encodeURIComponent('alice')}/disabled`, 'POST', { disabled: true }, accountToken)).status).toBe(200)
+    expect((await request('/auth/login', 'POST', { email: 'alice', password: 'alice-test-password' })).status).toBe(403)
+  })
+  it('binds a verified email and resets the password through a mailed code', async () => {
+    const sent = await startWithMailer()
+    expect((await request('/admin/smtp', 'PUT', { enabled: true, host: 'smtp.test', port: 587, from: 'relay@test.example' }, accountToken)).status).toBe(200)
+    const registered = await request('/auth/register', 'POST', { email: 'bob', password: 'bob-test-password' })
+    const userToken = registered.data.token
+    // Unconfigured mail service is reported before a code is generated.
+    expect((await request('/auth/email/code', 'POST', { email: 'bob@example.com' }, userToken)).status).toBe(200)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.to).toBe('bob@example.com')
+    const bindCode = codeIn(sent[0]!.text)
+    expect((await request('/auth/email/bind', 'POST', { email: 'bob@example.com', code: '000000' }, userToken)).status).toBe(400)
+    const bound = await request('/auth/email/bind', 'POST', { email: 'bob@example.com', code: bindCode }, userToken)
+    expect(bound.status).toBe(200)
+    expect(bound.data.email).toBe('bob@example.com')
+    expect(bound.data.emailVerified).toBe(true)
+    // The verified address is now a login identifier.
+    expect((await request('/auth/login', 'POST', { email: 'bob@example.com', password: 'bob-test-password' })).status).toBe(200)
+    // Password recovery: forgot mails a code, reset consumes it once.
+    expect((await request('/auth/password/forgot', 'POST', { email: 'bob@example.com' })).status).toBe(200)
+    const resetCode = codeIn(sent[sent.length - 1]!.text)
+    expect((await request('/auth/password/reset', 'POST', { email: 'bob@example.com', code: '000000', password: 'bob-new-password' })).status).toBe(400)
+    expect((await request('/auth/password/reset', 'POST', { email: 'bob@example.com', code: resetCode, password: 'bob-new-password' })).status).toBe(200)
+    expect((await request('/auth/password/reset', 'POST', { email: 'bob@example.com', code: resetCode, password: 'bob-new-password' })).status).toBe(400)
+    expect((await request('/auth/login', 'POST', { email: 'bob', password: 'bob-test-password' })).status).toBe(401)
+    expect((await request('/auth/login', 'POST', { email: 'bob', password: 'bob-new-password' })).status).toBe(200)
+    // An unknown address answers identically and sends nothing.
+    const before = sent.length
+    expect((await request('/auth/password/forgot', 'POST', { email: 'nobody@example.com' })).status).toBe(200)
+    expect(sent.length).toBe(before)
+  })
+  it('exposes administrator site settings to anonymous visitors', async () => {
+    await startWithMailer()
+    expect((await request('/admin/site', 'PUT', { name: 'My Relay', announcement: '维护公告', footer: '© 2026 Me' }, accountToken)).status).toBe(200)
+    const site = await request('/site', 'GET')
+    expect(site.status).toBe(200)
+    expect(site.data).toMatchObject({ name: 'My Relay', announcement: '维护公告', footer: '© 2026 Me' })
+    expect(site.data.registration.enabled).toBe(true)
   })
 })

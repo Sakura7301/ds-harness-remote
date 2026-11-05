@@ -2,7 +2,7 @@
 
 **English** · [中文](README.zh.md)
 
-A multi-account Remote Server with WebRTC (LAN / P2P / TURN) and end-to-end encrypted Relay. The environment variables provision one bootstrap account (created or re-keyed on start), and visitors can register their own accounts from the sign-in page by default. Its Web UI includes a landing page, sign-in/registration, and device status page. Devices and connections are isolated per account, and the Server is deployed separately from the Host plugin bundle.
+A multi-account Remote Server with WebRTC (LAN / P2P / TURN) and end-to-end encrypted Relay. The environment variables provision the built-in **administrator** (any username, an email address is recommended); it is created or re-keyed on start. Visitors can register their own accounts by username by default. Administrators get a console for service status, SMTP configuration, site profile and user management; regular accounts can bind an email (once an administrator configured SMTP) and then use it to recover the password. Devices and connections are isolated per account, and the Server is deployed separately from the Host plugin bundle.
 
 This remains a small self-hosted Server that we intend to maintain. The product shape of the full Server Web is still evolving, so this repository does not promise to open source the current or future full site.
 

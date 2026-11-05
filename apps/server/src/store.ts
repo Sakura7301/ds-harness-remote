@@ -13,25 +13,57 @@ export const equal = (left: string, right: string): boolean => timingSafeEqual(B
 
 /** Minimum password length, shared by registration and the bootstrap account. */
 export const PASSWORD_MIN_LENGTH = 12
+/** Self-service usernames: letters/digits first, then letters, digits, dot, dash or underscore. */
+export const USERNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$/
 /** Per-account device and token caps; the global caps scale with the account count. */
 const ACCOUNT_MAX_DEVICES = 256
 const ACCOUNT_MAX_TOKENS = 16_384
-const ACCOUNT_EMAIL_MAX_LENGTH = 254
+const ACCOUNT_NAME_MAX_LENGTH = 64
+const EMAIL_MAX_LENGTH = 254
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 /** Salt used when an unknown account is probed, so a miss costs the same work as a hit. */
 const UNKNOWN_ACCOUNT_SALT = 'unknown-account'
 
 /**
- * Canonical account key. Addresses are stored and compared in one casing, so a
- * login with a different case cannot fork a second identity for one mailbox.
+ * Canonical account key. Names are stored and compared in one casing, so a
+ * login with a different case cannot fork a second identity for one name.
  */
-export const accountKey = (email: string): string => email.trim().toLowerCase()
+export const accountKey = (name: string): string => name.trim().toLowerCase()
 
-export function validAccountKey(account: string): boolean {
-  return account.length > 0 && account.length <= ACCOUNT_EMAIL_MAX_LENGTH && EMAIL_PATTERN.test(account)
+export function validUsername(name: string): boolean {
+  return USERNAME_PATTERN.test(name)
+}
+export function validEmail(email: string): boolean {
+  return email.length > 0 && email.length <= EMAIL_MAX_LENGTH && EMAIL_PATTERN.test(email)
 }
 
-const accountRecordSchema = z.object({ salt: z.string(), verifier: z.string(), createdAt: z.number() })
+const accountRecordSchema = z.object({
+  salt: z.string(),
+  verifier: z.string(),
+  createdAt: z.number(),
+  /** Bootstrap accounts are administrators; self-service accounts default to users. */
+  role: z.enum(['admin', 'user']).optional(),
+  /** Bound address, lowercased. Login and password reset accept it once verified. */
+  email: z.string().optional(),
+  emailVerified: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+})
+const smtpSchema = z.object({
+  enabled: z.boolean().optional(),
+  host: z.string().optional(),
+  port: z.number().optional(),
+  secure: z.boolean().optional(),
+  user: z.string().optional(),
+  pass: z.string().optional(),
+  from: z.string().optional(),
+})
+const siteSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().optional(),
+  announcement: z.string().optional(),
+  footer: z.string().optional(),
+})
+const settingsSchema = z.object({ smtp: smtpSchema.optional(), site: siteSchema.optional() })
 const tokenSchema = z.object({ kind: z.enum(['access', 'refresh']), deviceId: z.string(), account: z.string(), expires: z.number(), used: z.boolean() })
 const savedDeviceSchema = z.object({ descriptor: accountDeviceDescriptorSchema, revoked: z.boolean(), lastSeenAt: z.number(), account: z.string() })
 /** Current on-disk format: many accounts, each owning its own devices and tokens. */
@@ -40,6 +72,7 @@ const stateSchema = z.object({
   accounts: z.record(z.string(), accountRecordSchema),
   devices: z.record(z.string(), savedDeviceSchema),
   tokens: z.record(z.string(), tokenSchema),
+  settings: settingsSchema.optional(),
 })
 
 /** Version 1 kept the single account in the state root; loaded only to migrate. */
@@ -55,15 +88,27 @@ const legacyStateSchema = z.object({
 })
 
 type State = z.infer<typeof stateSchema>
+type AccountRecord = z.infer<typeof accountRecordSchema>
 type SavedDevice = z.infer<typeof savedDeviceSchema>
+export type SmtpSettings = z.infer<typeof smtpSchema>
+export type SiteSettings = z.infer<typeof siteSchema>
+export interface AccountDescriptor {
+  account: string
+  role: 'admin' | 'user'
+  email?: string
+  emailVerified: boolean
+  disabled: boolean
+  createdAt: number
+  devices: number
+}
 
 /**
  * Single-process store. Only token digests and public identities reach disk.
  *
  * Accounts are independent: a device belongs to the account that registered it,
  * device tokens carry their owner, and nothing is listed across accounts. The
- * account/password passed from the environment is a bootstrap identity that is
- * created (or re-keyed) on start, not the only one the server accepts.
+ * account/password passed from the environment is the bootstrap administrator
+ * and is re-keyed on start, not the only identity the server accepts.
  */
 export class Store {
   private readonly state: State
@@ -93,7 +138,7 @@ export class Store {
     for (const [key, token] of Object.entries(legacy.tokens)) tokens[key] = { ...token, account }
     return {
       version: 2,
-      accounts: { [account]: { salt: legacy.salt, verifier: legacy.verifier, createdAt: Date.now() } },
+      accounts: { [account]: { salt: legacy.salt, verifier: legacy.verifier, createdAt: Date.now(), role: 'admin' } },
       devices,
       tokens,
     }
@@ -114,36 +159,134 @@ export class Store {
       // name is accepted so an existing deployment never fails to start.
       if (password.length < PASSWORD_MIN_LENGTH) throw new Error(`DSH_SERVER_PASSWORD must be at least ${PASSWORD_MIN_LENGTH} characters.`)
       const salt = this.createSalt()
-      this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now() }
+      this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now(), role: 'admin' }
       return
     }
+    // The environment account is the administrator, even for a pre-existing record.
+    existing.role = 'admin'
     const verifier = this.verifyPassword(password, existing.salt)
     if (equal(verifier, existing.verifier)) return
     existing.verifier = verifier
     for (const [key, value] of Object.entries(this.state.tokens)) if (value.account === account) delete this.state.tokens[key]
   }
   accountCount(): number { return Object.keys(this.state.accounts).length }
-  accountExists(email: string): boolean { return Object.hasOwn(this.state.accounts, accountKey(email)) }
+  accountExists(name: string): boolean { return Object.hasOwn(this.state.accounts, accountKey(name)) }
+  /** Resolve a login identifier: the account name first, then a verified email. */
+  resolveIdentifier(identifier: string): string | null {
+    const key = accountKey(identifier)
+    if (Object.hasOwn(this.state.accounts, key)) return key
+    if (!validEmail(key)) return null
+    for (const [account, record] of Object.entries(this.state.accounts)) {
+      if (record.email === key && record.emailVerified === true) return account
+    }
+    return null
+  }
+  /** Account owning a verified email address, or null. Used by password recovery. */
+  accountByEmail(email: string): string | null {
+    const normalized = email.trim().toLowerCase()
+    if (!validEmail(normalized)) return null
+    for (const [account, record] of Object.entries(this.state.accounts)) {
+      if (record.email === normalized && record.emailVerified === true) return account
+    }
+    return null
+  }
   /**
    * Register a new account. Callers decide policy (open registration, invite
    * code); the store enforces the identity and password contract.
    */
-  createAccount(email: string, password: string): string {
-    const account = accountKey(email)
-    if (!validAccountKey(account)) throw new ApiError('INVALID_ACCOUNT')
+  createAccount(username: string, password: string): string {
+    const account = accountKey(username)
+    if (!validUsername(account) && !validEmail(account)) throw new ApiError('INVALID_ACCOUNT')
     if (password.length < PASSWORD_MIN_LENGTH) throw new ApiError('WEAK_PASSWORD')
     if (Object.hasOwn(this.state.accounts, account)) throw new ApiError('ACCOUNT_EXISTS', 409)
     if (this.accountCount() >= this.maxAccounts) throw new ApiError('ACCOUNT_LIMIT_REACHED', 429)
     const salt = this.createSalt()
-    this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now() }
+    this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now(), role: 'user' }
     this.save()
     return account
   }
   /** Constant-ish time: an unknown account still pays one scrypt derivation. */
-  verify(email: string, password: string): boolean {
-    const record = this.state.accounts[accountKey(email)]
+  verify(identifier: string, password: string): string | null {
+    const account = this.resolveIdentifier(identifier)
+    const record = account === null ? undefined : this.state.accounts[account]
     const verifier = this.verifyPassword(password, record?.salt ?? UNKNOWN_ACCOUNT_SALT)
-    return record !== undefined && equal(verifier, record.verifier)
+    if (account === null || record === undefined) return null
+    if (!equal(verifier, record.verifier)) return null
+    if (record.disabled === true) throw new ApiError('ACCOUNT_DISABLED', 403)
+    return account
+  }
+  private assertExists(account: string): AccountRecord {
+    const record = this.state.accounts[account]
+    if (record === undefined) throw new ApiError('ACCOUNT_NOT_FOUND', 404)
+    return record
+  }
+  roleOf(account: string): 'admin' | 'user' {
+    return this.state.accounts[account]?.role === 'admin' ? 'admin' : 'user'
+  }
+  isAdmin(account: string): boolean { return this.roleOf(account) === 'admin' }
+  descriptorOf(account: string): AccountDescriptor {
+    const record = this.assertExists(account)
+    return {
+      account,
+      role: record.role === 'admin' ? 'admin' : 'user',
+      ...(record.email === undefined ? {} : { email: record.email }),
+      emailVerified: record.emailVerified === true,
+      disabled: record.disabled === true,
+      createdAt: record.createdAt,
+      devices: this.list(account).length,
+    }
+  }
+  listAccounts(): AccountDescriptor[] {
+    return Object.keys(this.state.accounts)
+      .map(account => this.descriptorOf(account))
+      .sort((a, b) => a.createdAt - b.createdAt)
+  }
+  setPassword(account: string, password: string): void {
+    if (password.length < PASSWORD_MIN_LENGTH) throw new ApiError('WEAK_PASSWORD')
+    const record = this.assertExists(account)
+    const salt = this.createSalt()
+    record.salt = salt
+    record.verifier = this.verifyPassword(password, salt)
+    for (const [key, value] of Object.entries(this.state.tokens)) if (value.account === account) delete this.state.tokens[key]
+    this.save()
+  }
+  /** Bind an email that the caller has already proven ownership of. */
+  bindEmail(account: string, email: string): void {
+    const normalized = email.trim().toLowerCase()
+    if (!validEmail(normalized)) throw new ApiError('INVALID_EMAIL')
+    const existing = this.accountByEmail(normalized)
+    if (existing !== null && existing !== account) throw new ApiError('EMAIL_IN_USE', 409)
+    const record = this.assertExists(account)
+    record.email = normalized
+    record.emailVerified = true
+    this.save()
+  }
+  setDisabled(account: string, disabled: boolean): void {
+    const record = this.assertExists(account)
+    record.disabled = disabled
+    if (disabled) for (const [key, value] of Object.entries(this.state.tokens)) if (value.account === account) delete this.state.tokens[key]
+    this.save()
+  }
+  deleteAccount(account: string): void {
+    this.assertExists(account)
+    delete this.state.accounts[account]
+    for (const [id, device] of Object.entries(this.state.devices)) if (device.account === account) delete this.state.devices[id]
+    for (const [key, value] of Object.entries(this.state.tokens)) if (value.account === account) delete this.state.tokens[key]
+    this.save()
+  }
+  smtp(): SmtpSettings { return { ...this.state.settings?.smtp } }
+  setSmtp(patch: SmtpSettings): SmtpSettings {
+    const next = { ...this.state.settings?.smtp, ...patch }
+    this.state.settings = { ...this.state.settings, smtp: next }
+    this.save()
+    return { ...next }
+  }
+  site(): SiteSettings { return { ...this.state.settings?.site } }
+  setSite(patch: SiteSettings): SiteSettings {
+    const next = { ...this.state.settings?.site, ...patch }
+    this.state.settings = { ...this.state.settings, site: next }
+    this.save()
+    return { ...next }
   }
   get(id: string): SavedDevice {
     const d = Object.hasOwn(this.state.devices, id) ? this.state.devices[id] : undefined

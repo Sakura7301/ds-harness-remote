@@ -6,7 +6,8 @@ import { ThemeProvider, useColorTheme } from './theme'
 import { LoginPanel } from './LoginPanel'
 import { DevicesPage } from './DevicesPage'
 import { HomePage } from './HomePage'
-import { api, RequestError, type Account } from './api'
+import { api, RequestError, type Account, type SiteInfo } from './api'
+import { AdminConsole } from './AdminConsole'
 import 'antd/dist/reset.css'
 import './upstream.css'
 import './selfhost.css'
@@ -22,6 +23,7 @@ function App() {
   const [account, setAccount] = useState<Account | null>()
   const [error, setError] = useState<string>()
   const [path, setPath] = useState(() => window.location.pathname)
+  const [site, setSite] = useState<SiteInfo>()
   // Keep route state and URL in sync without dispatching popstate: dispatching synchronously makes
   // React commit the route change separately, so an auth transition can render an intermediate
   // unauthenticated route and the guard below bounces /app/remote back to /app/login.
@@ -37,6 +39,12 @@ function App() {
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
   useEffect(() => {
+    api<SiteInfo>('/site').then(info => {
+      setSite(info)
+      if (info.name.trim() !== '') document.title = info.name
+    }).catch(() => { /* keep the built-in title */ })
+  }, [])
+  useEffect(() => {
     api<Account>('/auth/me').then(setAccount).catch(err => {
       if (!(err instanceof RequestError && err.status === 401)) setError(err instanceof Error ? err.message : '无法连接服务。')
       setAccount(null)
@@ -46,22 +54,28 @@ function App() {
   useEffect(() => {
     if (justLoggedIn.current) { justLoggedIn.current = false; return }
     if (account === null && path === '/app/remote') go('/app/login')
+    if (account === null && path === '/admin') go('/app/login')
   }, [account, path, go])
   const login = useCallback((next: Account) => { justLoggedIn.current = true; setAccount(next); go('/app/remote') }, [go])
   const content = account === undefined
     ? <div className="route-loading auth-route-loading" role="status">正在检查登录状态…</div>
     : path === '/app/remote' && account
-      ? <DevicesPage account={account.account} onSignedOut={signedOut} />
-      : path === '/app/login'
-        ? <LoginPanel onAuthSuccess={login} initialError={error} />
-        : <HomePage />
+      ? <DevicesPage account={account} onSignedOut={signedOut} onOpenAdmin={() => go('/admin')} />
+      : path === '/admin' && account
+        ? account.isAdmin === true
+          ? <AdminConsole account={account} onBack={() => go('/app/remote')} onSignedOut={signedOut} />
+          : <DevicesPage account={account} onSignedOut={signedOut} onOpenAdmin={() => go('/app/remote')} />
+        : path === '/app/login'
+          ? <LoginPanel onAuthSuccess={login} initialError={error} />
+          : <HomePage />
   return <ConfigProvider locale={zhCN} theme={{
     algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
       colorPrimary: '#1677ff', colorInfo: '#1677ff', colorSuccess: dark ? '#49aa68' : '#16a34a', colorWarning: dark ? '#d89614' : '#d97706', colorError: dark ? '#ff7875' : '#cf222e',
       colorBgLayout: dark ? '#111318' : '#f5f5f7', colorBgContainer: dark ? '#181b22' : '#ffffff', colorBgElevated: dark ? '#20242c' : '#ffffff', colorText: dark ? '#f2f3f5' : '#1d1d1f', colorTextSecondary: dark ? '#b7bcc7' : '#6e6e73', colorTextPlaceholder: dark ? '#8d94a3' : '#6e6e73', colorBorder: dark ? '#3a404c' : '#d9e2ec', colorBorderSecondary: dark ? '#2d323c' : '#e8e8ed', borderRadius: 6, borderRadiusLG: 8, controlHeight: 40, fontSize: 15, wireframe: false,
     }, components: { Button: { primaryShadow: 'none' }, Table: { headerBg: dark ? '#20242c' : '#f7f7f8', headerColor: dark ? '#c8cdd6' : '#4b5563' } },
-  }}><Layout className={account && path === '/app/remote' ? 'app-shell product-shell' : 'app-shell auth-shell'}>
+  }}><Layout className={account && (path === '/app/remote' || path === '/admin') ? 'app-shell product-shell' : 'app-shell auth-shell'}>
+    {site?.announcement && site.announcement.trim() !== '' && path !== '/app/remote' && path !== '/admin' && <div className="site-announcement">{site.announcement}</div>}
     {content}
   </Layout></ConfigProvider>
 }

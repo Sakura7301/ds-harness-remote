@@ -1,13 +1,21 @@
 import { AppleOutlined, HistoryOutlined, LinkOutlined, MobileOutlined } from '@ant-design/icons'
+import { useEffect, useState } from 'react'
+import { api, type SiteInfo } from './api'
 
-const REPOSITORY = 'https://github.com/liguobao/ds-harness-remote'
 const IOS_BETA_URL = 'https://github.com/liguobao/ds-harness-remote/issues/20'
+const REPOSITORY = 'https://github.com/liguobao/ds-harness-remote'
 const CHANGELOG_URL = `${REPOSITORY}/blob/main/docs/CHANGELOG.md`
 const DOWNLOAD_URL = `${REPOSITORY}/releases/latest`
 
 export function SiteFooter() {
+  const [site, setSite] = useState<SiteInfo>()
+  useEffect(() => {
+    let cancelled = false
+    api<SiteInfo>('/site').then(info => { if (!cancelled) setSite(info) }).catch(() => { /* the footer keeps its defaults */ })
+    return () => { cancelled = true }
+  }, [])
   return <footer className="site-footer app-footer">
-    <span>© DSH Remote</span>
+    <span>{site?.footer && site.footer.trim() !== '' ? site.footer : '© DSH Remote'}</span>
     <div className="site-footer-links">
       <a href="/" className="site-footer-link" aria-label="返回首页"><LinkOutlined aria-hidden="true" /><span>返回首页</span></a>
       <a href={CHANGELOG_URL} target="_blank" rel="noreferrer" className="site-footer-link" aria-label="更新日志"><HistoryOutlined aria-hidden="true" /><span>更新日志</span></a>
