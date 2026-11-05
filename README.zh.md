@@ -307,4 +307,4 @@ DS Bot 是一个基于 DeepSeek Harness（简称 dsh）的 bot 插件，插件�
 
 ## License
 
-[MIT](packages/plugin/LICENSE)
+[MIT](LICENSE)。第三方组件与打包进 Host bundle 的运行时依赖见 [NOTICE](NOTICE)。

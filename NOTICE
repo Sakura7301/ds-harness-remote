@@ -1,0 +1,70 @@
+Third-party notices for ds-harness-remote
+=========================================
+
+This document captures the third-party components that are vendored into, or
+bundled with, this repository. It does not replace the license files shipped by
+those components, and it does not cover ordinary dependencies that are installed
+from npm at build or run time: those keep their own licenses under node_modules.
+
+
+Origin
+------
+This repository is a fork of DSH Remote:
+
+  https://github.com/liguobao/ds-harness-remote
+
+The upstream project is distributed under the MIT License and its copyright
+notice is retained in LICENSE. Fork-specific server features (multi-account
+registration, administrator console, email verification and sign-in) live only
+in this fork and are distributed under the same MIT License.
+
+
+Vendored components (Apache-2.0)
+--------------------------------
+These directories contain vendored code that keeps its own license and notice
+files. If you redistribute a build that includes them (for example an Android
+APK), keep those files and mark any files you modify.
+
+  apps/android/src/vendor/ds-bot/
+      License:         apps/android/src/vendor/ds-bot/LICENSE  (Apache-2.0)
+      Notice:          apps/android/src/vendor/ds-bot/NOTICE
+
+  apps/android/src/screens/bot/assets/
+      License:         apps/android/src/screens/bot/assets/LICENSE  (Apache-2.0)
+      Notice:          apps/android/src/screens/bot/assets/NOTICE
+
+Apache License 2.0: http://www.apache.org/licenses/LICENSE-2.0
+
+
+Bundled Host runtime dependencies (MIT)
+---------------------------------------
+packages/plugin/dist/index.js is a bundle: it inlines the plugin's runtime
+dependencies so the Host entry can load from an installation that only carries
+the bundle files. The following MIT-licensed packages are therefore included in
+the distributed bundle:
+
+  ws                       Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
+  qrcode                   Copyright (c) 2012 Ryan Day <soldair@gmail.com>
+  @deepseek-ai/schemastery Copyright (c) 2021-present Shigma
+  zod                      Copyright (c) 2025 Colin McDonnell
+  @xterm/headless          MIT (see node_modules/@xterm/headless/LICENSE)
+  @xterm/addon-serialize   MIT (see node_modules/@xterm/addon-serialize/LICENSE)
+
+Deliberately kept external (provided by the DeepSeek Harness host, not bundled):
+
+  @deepseek-ai/dsh-client-connection
+  @roamhq/wrtc             (optional native WebRTC dependency, MIT)
+
+
+Server dependencies
+-------------------
+apps/server installs its own npm dependencies, including nodemailer (MIT-0) and
+its closure; their licenses remain in the installed packages and are not
+reproduced here.
+
+
+Trademarks
+----------
+MIT does not grant trademark rights. DeepSeek and related names and marks belong
+to their respective owners. This repository is an independent community project
+and is not an official DeepSeek product.

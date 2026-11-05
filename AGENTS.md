@@ -252,7 +252,15 @@ Desktop，探测超时关闭 stdout 后可能触发 `write EPIPE`。探测脚本
 
 ## Fork 说明（Sakura7301）
 
-本 fork 在 `apps/server` 上增加了**多账号自助注册**（上游把完整多账号 Server 划在仓库边界之外，因此这部分只在本 fork 维护，不要按上游 scope 提交 PR）。账号由 JSON state 的 `accounts` 保存；设备与 token 都记录所属账号，跨账号的设备列表、改名、presence 与 Host 连接一律 fail closed；环境变量账号仍作为启动时创建/重设密码的引导账号；旧的单账号 state（version 1）启动时自动迁移。新增配置：`DSH_SERVER_ALLOW_REGISTRATION`（默认开启）、`DSH_SERVER_REGISTRATION_CODE`、`DSH_SERVER_MAX_ACCOUNTS`。管理员（`role: admin`）由环境变量账号强制指定，可用任意用户名；控制台 `/admin` 提供概览、站点设置、SMTP 与用户管理（`/api/v1/admin/*`，非管理员 403）。自助注册只要求用户名（3–32 位字母/数字/._-），邮箱可选：登录与找回密码都接受「已验证邮箱」，验证码通过 nodemailer 发送（`mailer.ts`，测试用 `Config.sendMail` 注入）。站点信息与 SMTP 保存在 state 的 `settings` 里，`GET /api/v1/site` 匿名可读。测试：`tests/server.test.ts` 的 "multi-account registration and isolation" 与 "administrator console, usernames and email codes"。
+本 fork **只在我们自己的仓库维护，不再向上游提交任何改动**（上游把多账号 Server 与 Admin 划在仓库边界之外）。fork-only 改动集中在 `apps/server` 与 `apps/server/web`：
+
+- 多账号：账号以**邮箱为唯一身份**（state 的 `accounts`，大小写归一），昵称只是显示名；设备与 token 记录所属账号，跨账号的设备列表、改名、presence、Host 连接一律 fail closed；旧 state（v1 单账号、v2 用户名 key）启动时自动迁移到邮箱 key，设备与凭证随之迁移。
+- 管理员：`DSH_SERVER_ACCOUNT` 指定的账号强制 `role: admin`；`DSH_SERVER_ACCOUNT_EMAIL` 绑定登录邮箱，`DSH_SERVER_ACCOUNT_NICKNAME` 设置昵称。控制台 `/admin`（`/api/v1/admin/*`，非管理员 403）提供概览（资源占用与上下行流量图）、站点设置、SMTP 配置与用户管理。
+- 邮件：nodemailer（`mailer.ts`，测试通过 `Config.sendMail` 注入，不触网）；SMTP 默认值可由 `DSH_SERVER_SMTP_*` 提供，控制台保存项逐字段覆盖。注册、改密、换绑邮箱、删除设备均需邮箱验证码（10 分钟、5 次尝试、`crypto.randomInt`）。
+- 登录：`DSH_SERVER_EMAIL_LOGIN=off|optional|required`；支持邮箱验证码登录。会话持久化在 state 的 `sessions`，Cookie 30 天，容器重启不掉线；退出登录从磁盘删除。
+- 站点信息存 `settings.site`，`GET /api/v1/site` 匿名可读；注册策略见 `DSH_SERVER_ALLOW_REGISTRATION` / `DSH_SERVER_REGISTRATION_CODE` / `DSH_SERVER_MAX_ACCOUNTS`。
+- 许可证：根 `LICENSE`（MIT，保留上游版权行与 fork 版权行）与 `NOTICE`（Android vendored 的 Apache-2.0 组件、plugin bundle 内联依赖清单）。**不得删除或替换这两个文件**，也不得把 Apache-2.0 部分改写成 MIT。
+- 测试：`apps/server/tests/server.test.ts` 中 multi-account、administrator console、email、session 相关用例（当前 63 条）。
 
 本文件面向在当前仓库工作的编码 Agent，记录仓库边界、项目结构、实现状态、验证命令和协作约束。用户产品说明与 Plugin 使用方式见 `README.md`。
 

@@ -324,4 +324,4 @@ DeepSeek および関連する名称・商標は、それぞれの権利者に�
 
 ## ライセンス
 
-[MIT](packages/plugin/LICENSE)
+[MIT](LICENSE). Third-party components and the bundled Host runtime dependencies are listed in [NOTICE](NOTICE).

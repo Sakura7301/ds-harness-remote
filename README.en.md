@@ -327,4 +327,4 @@ DeepSeek and related names and marks belong to their respective owners.
 
 ## License
 
-[MIT](packages/plugin/LICENSE)
+[MIT](LICENSE). Third-party components and the bundled Host runtime dependencies are listed in [NOTICE](NOTICE).
