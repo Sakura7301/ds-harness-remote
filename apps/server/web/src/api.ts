@@ -18,6 +18,7 @@ export interface SiteInfo {
   footer: string
   registration: RegistrationInfo
   email: { enabled: boolean; verificationRequired: boolean }
+  login: { emailCode: 'off' | 'optional' | 'required' }
 }
 export interface NetworkPoint { t: number; rx: number; tx: number }
 export interface AdminOverview {
@@ -86,6 +87,8 @@ const MESSAGES: Record<string, string> = {
   INVALID_EMAIL: '请输入有效的邮箱地址。',
   EMAIL_IN_USE: '该邮箱已被其他账号绑定。',
   SMTP_NOT_CONFIGURED: '管理员尚未配置邮件服务器。',
+  EMAIL_LOGIN_DISABLED: '本服务器已关闭邮箱验证码登录。',
+  EMAIL_CODE_REQUIRED: '本服务器要求使用邮箱验证码登录。',
   SMTP_FAILED: '邮件服务器连接失败，请检查配置。',
   ADMIN_REQUIRED: '需要管理员权限。',
   SELF_FORBIDDEN: '不能对当前登录的账号执行该操作。',

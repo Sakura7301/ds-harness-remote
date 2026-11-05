@@ -20,6 +20,9 @@ const logLevel = parseLogLevel(process.env.DSH_SERVER_LOG_LEVEL)
 
 /** Registration is open unless the deployment turns it off; an invite code gates it further. */
 const allowRegistration = !['0', 'false', 'no', 'off'].includes((process.env.DSH_SERVER_ALLOW_REGISTRATION ?? 'true').trim().toLowerCase())
+/** Email-code login: off | optional (default) | required. */
+const emailLoginRaw = (process.env.DSH_SERVER_EMAIL_LOGIN ?? 'optional').trim().toLowerCase()
+const emailLogin = emailLoginRaw === 'off' || emailLoginRaw === 'required' ? emailLoginRaw : 'optional'
 /** SMTP defaults; the administrator console can override any field. */
 const smtpPort = Number(process.env.DSH_SERVER_SMTP_PORT ?? '')
 const smtpHost = process.env.DSH_SERVER_SMTP_HOST?.trim() ?? ''
@@ -51,6 +54,8 @@ const app = createRemoteServer({
   registrationCode: process.env.DSH_SERVER_REGISTRATION_CODE ?? '',
   maxAccounts,
   smtp: envSmtp,
+  emailLogin,
+  accountEmail: process.env.DSH_SERVER_ACCOUNT_EMAIL ?? '',
 })
 app.server.listen(port, process.env.DSH_SERVER_HOST ?? '127.0.0.1', () => console.info(`Remote Server listening on port ${port}`))
 app.server.on('error', () => { console.error('Remote Server could not listen. Check address and port.'); process.exitCode = 1; app.gateway.close() })

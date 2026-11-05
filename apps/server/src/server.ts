@@ -40,6 +40,10 @@ export interface Config {
   sendMail?: MailSender
   /** SMTP defaults from the environment; the console can override them. */
   smtp?: SmtpSettings
+  /** Email-code login policy: 'off', 'optional' (default) or 'required'. */
+  emailLogin?: 'off' | 'optional' | 'required'
+  /** Address bound to the bootstrap administrator on start. */
+  accountEmail?: string
   trustedProxyIps?: readonly string[]
   helloTimeoutMs?: number
   heartbeatIntervalMs?: number
@@ -84,7 +88,12 @@ export {
 }
 export type { GatewayTimingOptions, NormalizedGatewayOptions } from './config.js'
 
-const loginSchema = z.object({ email: z.string().min(1).max(254), password: z.string().min(1).max(1024) }).strict()
+const loginSchema = z.object({
+  email: z.string().min(1).max(254),
+  password: z.string().max(1024).optional(),
+  code: z.string().max(16).optional(),
+}).strict()
+const loginCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const registerSchema = z.object({
   username: z.string().min(1).max(64).optional(),
   /** Registration mailbox; required (and verified) once SMTP is configured. */
@@ -205,6 +214,15 @@ export function createRemoteServer(config: Config) {
   const ice = config.ice ?? parseIceConfig({})
   const store = new Store(config.dataFile, config.account.trim(), config.password, config.maxAccounts ?? 256)
   const allowRegistration = config.allowRegistration !== false
+  const emailLogin = config.emailLogin === 'off' || config.emailLogin === 'required' ? config.emailLogin : 'optional'
+  const bootstrapEmail = config.accountEmail?.trim().toLowerCase() ?? ''
+  if (bootstrapEmail !== '' && validEmail(bootstrapEmail)) {
+    const bootstrap = accountKey(config.account)
+    try {
+      const current = store.descriptorOf(bootstrap)
+      if (current.email !== bootstrapEmail) store.bindEmail(bootstrap, bootstrapEmail)
+    } catch { /* the address already belongs to another account */ }
+  }
   const registrationCode = config.registrationCode?.trim() ?? ''
   const mail = config.sendMail ?? defaultSendMail
   const startedAt = Date.now()
@@ -255,6 +273,7 @@ export function createRemoteServer(config: Config) {
       footer: site.footer ?? '',
       registration: { enabled: allowRegistration, requiresCode: registrationCode !== '' },
       email: { enabled: smtpConfigured(smtp), verificationRequired: allowRegistration && smtpConfigured(smtp) },
+      login: { emailCode: smtpConfigured(smtp) ? emailLogin : 'off' as const },
     }
   }
   const mailBrand = () => store.site().name ?? 'DeepSeek Harness Remote'
@@ -424,12 +443,34 @@ export function createRemoteServer(config: Config) {
       // Public: the sign-in page needs to know whether to offer a register tab.
       json(res, 200, { enabled: allowRegistration, requiresCode: registrationCode !== '' }); return
     }
+    if (method === 'POST' && path === '/api/v1/auth/login/code') {
+      rate(`login-code:${client}`, 5)
+      if (emailLogin === 'off') throw new ApiError('EMAIL_LOGIN_DISABLED', 403)
+      const request = loginCodeSchema.parse(await body(req))
+      const account = store.accountByEmail(request.email)
+      // Answer identically for unknown addresses: account membership is not public.
+      if (account !== null) {
+        const code = issueEmailCode(`login:${account}`)
+        await sendCodeMail(request.email.trim().toLowerCase(), code, '登录验证码')
+      }
+      json(res, 200, { status: 'ok' }); return
+    }
     if (method === 'POST' && path === '/api/v1/auth/login') {
       rate(`login:${client}`, 20)
       const credentials = loginSchema.parse(await body(req))
-      // Accept a username or a verified email: the store resolves the identifier.
-      const account = store.verify(credentials.email, credentials.password)
-      if (account === null) throw new ApiError('AUTH_INVALID', 401)
+      const useCode = credentials.code !== undefined && credentials.code.trim() !== ''
+      let account: string | null
+      if (useCode) {
+        if (emailLogin === 'off') throw new ApiError('EMAIL_LOGIN_DISABLED', 403)
+        const owner = store.accountByEmail(credentials.email)
+        if (owner === null || !checkEmailCode(`login:${owner}`, credentials.code!)) throw new ApiError('CODE_INVALID', 400)
+        account = owner
+      } else {
+        if (emailLogin === 'required') throw new ApiError('EMAIL_CODE_REQUIRED', 403)
+        // Accept a username or a verified email: the store resolves the identifier.
+        account = store.verify(credentials.email, credentials.password ?? '')
+        if (account === null) throw new ApiError('AUTH_INVALID', 401)
+      }
       const session = startSession(account)
       res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return

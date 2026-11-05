@@ -1189,6 +1189,36 @@ describe('administrator console, usernames and email codes', () => {
     expect(overview.data.accounts.total).toBe(1)
     expect(overview.data.email).toEqual({ enabled: true, source: 'env', verificationRequired: true })
   })
+  it('logs in with a mailed code and honours DSH_SERVER_EMAIL_LOGIN', async () => {
+    const sent: { to: string; subject: string; text: string }[] = []
+    const smtp = { enabled: true, host: 'smtp.test', port: 587, from: 'relay@test.example' }
+    const mailer = async (_config: unknown, message: { to: string; subject: string; text: string }) => { sent.push(message) }
+    await app.close()
+    // DSH_SERVER_ACCOUNT_EMAIL binds the administrator's address on start.
+    await start(password, [], { sendMail: mailer, smtp, accountEmail: 'admin@example.com' } as Partial<Config>)
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    expect((await request('/auth/me', 'GET', undefined, accountToken)).data.email).toBe('admin@example.com')
+    expect((await request('/auth/login/code', 'POST', { email: 'admin@example.com' })).status).toBe(200)
+    expect((await request('/auth/login', 'POST', { email: 'admin@example.com', code: '000000' })).status).toBe(400)
+    const viaCode = await request('/auth/login', 'POST', { email: 'admin@example.com', code: codeIn(sent[sent.length - 1]!.text) })
+    expect(viaCode.status).toBe(200)
+    expect(viaCode.data.account).toBe(account.toLowerCase())
+    // An unknown address answers like a known one and sends nothing.
+    const before = sent.length
+    expect((await request('/auth/login/code', 'POST', { email: 'ghost@example.com' })).status).toBe(200)
+    expect(sent.length).toBe(before)
+    // required: password sign-in is refused, the code path still works.
+    await app.close()
+    await start(password, [], { sendMail: mailer, smtp, accountEmail: 'admin@example.com', emailLogin: 'required' } as Partial<Config>)
+    expect((await request('/auth/login', 'POST', { email: account, password })).status).toBe(403)
+    await request('/auth/login/code', 'POST', { email: 'admin@example.com' })
+    expect((await request('/auth/login', 'POST', { email: 'admin@example.com', code: codeIn(sent[sent.length - 1]!.text) })).status).toBe(200)
+    // off: the code path is refused, the password path is available.
+    await app.close()
+    await start(password, [], { smtp, accountEmail: 'admin@example.com', emailLogin: 'off' } as Partial<Config>)
+    expect((await request('/auth/login/code', 'POST', { email: 'admin@example.com' })).status).toBe(403)
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+  })
   it('exposes administrator site settings to anonymous visitors', async () => {
     await startWithMailer()
     expect((await request('/admin/site', 'PUT', { name: 'My Relay', announcement: '维护公告', footer: '© 2026 Me' }, accountToken)).status).toBe(200)

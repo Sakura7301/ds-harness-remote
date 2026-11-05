@@ -14,6 +14,7 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [site, setSite] = useState<SiteInfo>()
   const [codeBusy, setCodeBusy] = useState(false)
+  const [loginMode, setLoginMode] = useState<'password' | 'code'>('password')
   const [codeNotice, setCodeNotice] = useState('')
   const [forgotOpen, setForgotOpen] = useState(false)
   const [forgotPhase, setForgotPhase] = useState<'request' | 'reset'>('request')
@@ -32,6 +33,9 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
   const registrationOpen = site?.registration.enabled === true
   const emailEnabled = site?.email.enabled === true
   const emailRequired = site?.email.verificationRequired === true
+  const emailCodeLogin = site?.login.emailCode ?? 'off'
+  const codeLoginRequired = emailCodeLogin === 'required'
+  useEffect(() => { if (codeLoginRequired) setLoginMode('code') }, [codeLoginRequired])
   function switchMode(next: 'login' | 'register') {
     setMode(next); setError(''); setCodeNotice(''); form.resetFields(['password', 'code'])
   }
@@ -45,10 +49,22 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
             password: values.password,
             ...(values.inviteCode?.trim() ? { inviteCode: values.inviteCode.trim() } : {}),
           })
-        : await api<Account>('/auth/login', { email: values.username.trim(), password: values.password })
+        : loginMode === 'code'
+          ? await api<Account>('/auth/login', { email: values.username.trim(), code: values.code.trim() })
+          : await api<Account>('/auth/login', { email: values.username.trim(), password: values.password })
       form.resetFields(['password']); onAuthSuccess(result)
     } catch (err) { setError(err instanceof Error ? err.message : (mode === 'register' ? '注册失败，请重试。' : '登录失败，请重试。')) }
     finally { setLoading(false) }
+  }
+  async function sendLoginCode() {
+    setCodeBusy(true); setError(''); setCodeNotice('')
+    try {
+      const email = String(await form.getFieldValue('username') ?? '').trim()
+      if (email === '') { setError('请先填写绑定的邮箱'); return }
+      await api('/auth/login/code', { email })
+      setCodeNotice('验证码已发送到该邮箱，10 分钟内有效。')
+    } catch (err) { setError(err instanceof Error ? err.message : '发送失败，请重试。') }
+    finally { setCodeBusy(false) }
   }
   async function sendRegisterCode() {
     setCodeBusy(true); setError(''); setCodeNotice('')
@@ -92,7 +108,7 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
         {codeNotice && <Alert className="selfhost-auth-error" type="success" showIcon message={codeNotice} />}
         {registering && !emailEnabled && <Alert className="selfhost-auth-error" type="info" showIcon message="管理员尚未配置邮件服务器，注册暂不需要邮箱验证。" />}
         <Form form={form} layout="vertical" onFinish={submit} requiredMark={false} className="auth-form">
-          <Form.Item name="username" label={registering ? '用户名' : '账号'} rules={[{ required: true, whitespace: true, message: registering ? '请输入用户名' : '请输入账号' }, { max: 254, message: '不能超过 254 个字符' }]}><Input size="large" placeholder={registering ? '3–32 位字母、数字、. _ -' : '请输入用户名或邮箱'} autoComplete="username" /></Form.Item>
+          <Form.Item name="username" label={registering ? '用户名' : loginMode === 'code' ? '邮箱' : '账号'} rules={[{ required: true, whitespace: true, message: registering ? '请输入用户名' : loginMode === 'code' ? '请输入邮箱' : '请输入账号' }, { max: 254, message: '不能超过 254 个字符' }]}><Input size="large" placeholder={registering ? '3–32 位字母、数字、. _ -' : loginMode === 'code' ? '请输入账号绑定的邮箱' : '请输入用户名或邮箱'} autoComplete="username" /></Form.Item>
           {registering && emailRequired && <>
             <Form.Item name="email" label="邮箱（需验证）" rules={[{ required: true, whitespace: true, message: '请输入邮箱' }]}><Input size="large" placeholder="you@example.com" autoComplete="email" /></Form.Item>
             <Form.Item label="邮箱验证码" required>
@@ -102,7 +118,13 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
               </Space.Compact>
             </Form.Item>
           </>}
-          <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }, { max: 1024, message: '密码不能超过 1024 个字符' }, ...(registering ? [{ min: PASSWORD_MIN_LENGTH, message: `密码至少 ${PASSWORD_MIN_LENGTH} 位` }] : [])]}><Input.Password size="large" placeholder={registering ? `请设置密码（至少 ${PASSWORD_MIN_LENGTH} 位）` : '请输入密码'} autoComplete={registering ? 'new-password' : 'current-password'} /></Form.Item>
+          {(registering || loginMode === 'password') && <Form.Item name="password" label="密码" rules={[{ required: true, message: '请输入密码' }, { max: 1024, message: '密码不能超过 1024 个字符' }, ...(registering ? [{ min: PASSWORD_MIN_LENGTH, message: `密码至少 ${PASSWORD_MIN_LENGTH} 位` }] : [])]}><Input.Password size="large" placeholder={registering ? `请设置密码（至少 ${PASSWORD_MIN_LENGTH} 位）` : '请输入密码'} autoComplete={registering ? 'new-password' : 'current-password'} /></Form.Item>}
+          {!registering && loginMode === 'code' && <Form.Item label="邮箱验证码" required>
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="code" noStyle rules={[{ required: true, message: '请输入验证码' }]}><Input size="large" placeholder="6 位验证码" maxLength={6} /></Form.Item>
+              <Button size="large" loading={codeBusy} onClick={() => void sendLoginCode()}>发送验证码</Button>
+            </Space.Compact>
+          </Form.Item>}
           {registering && site?.registration.requiresCode === true && <Form.Item name="inviteCode" label="邀请码" rules={[{ required: true, whitespace: true, message: '请输入邀请码' }]}><Input size="large" placeholder="请输入服务器邀请码" autoComplete="off" /></Form.Item>}
           <Form.Item className="auth-submit-item"><Button loading={loading} block type="primary" size="large" htmlType="submit">{registering ? '注册并登录' : '登录'}</Button></Form.Item>
         </Form>
@@ -111,7 +133,8 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
             ? <button type="button" className="auth-switch-link" onClick={() => switchMode('login')}>已有账号？返回登录</button>
             : <>
                 {registrationOpen && <button type="button" className="auth-switch-link" onClick={() => switchMode('register')}>还没有账号？注册</button>}
-                <button type="button" className="auth-switch-link auth-switch-secondary" onClick={() => { setForgotOpen(true); setForgotPhase('request'); setForgotError(''); setForgotNotice('') }}>忘记密码？</button>
+                {emailCodeLogin === 'optional' && <button type="button" className="auth-switch-link" onClick={() => { setLoginMode(loginMode === 'code' ? 'password' : 'code'); setError(''); setCodeNotice('') }}>{loginMode === 'code' ? '改用密码登录' : '改用邮箱验证码登录'}</button>}
+                {loginMode === 'password' && <button type="button" className="auth-switch-link auth-switch-secondary" onClick={() => { setForgotOpen(true); setForgotPhase('request'); setForgotError(''); setForgotNotice('') }}>忘记密码？</button>}
               </>}
         </div>
       </Card>
