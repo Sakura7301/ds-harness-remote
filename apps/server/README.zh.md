@@ -72,6 +72,13 @@ node --env-file=.env dist/main.js
 | `DSH_SERVER_ALLOW_REGISTRATION` | 是否允许自助注册，默认 `true`；设为 `false` 后只接受已有账号登录 |
 | `DSH_SERVER_REGISTRATION_CODE` | 可选邀请码；非空时注册必须携带 |
 | `DSH_SERVER_MAX_ACCOUNTS` | 账号数量上限，1–10000，默认 `256` |
+| `DSH_SERVER_ACCOUNT_EMAIL` | 启动时绑定到管理员账号的邮箱（管理员因此可用验证码登录） |
+| `DSH_SERVER_EMAIL_LOGIN` | 邮箱验证码登录策略：`off`（仅密码）/ `optional`（密码或验证码，默认）/ `required`（仅验证码） |
+| `DSH_SERVER_SMTP_ENABLED` | 启用邮件服务，默认按是否配置了 `DSH_SERVER_SMTP_HOST` 推断 |
+| `DSH_SERVER_SMTP_HOST` / `_PORT` / `_SECURE` | SMTP 服务器、端口与是否使用 SSL/TLS（465 通常为 `true`） |
+| `DSH_SERVER_SMTP_USER` / `_PASS` | SMTP 登录账号与**邮箱服务商提供的授权码**（不是本站验证码） |
+| `DSH_SERVER_SMTP_FROM` | 发件人，例如 `DSH-Remote <no-reply@example.com>` |
+| `DSH_SERVER_SMTP_*` 与控制台 | 环境变量作为默认值，控制台保存的字段逐项覆盖；注册需要邮箱验证、找回密码与验证码登录都依赖它 |
 | `DSH_SERVER_PUBLIC_URL` | 浏览器访问地址，默认 `http://localhost:8080` |
 | `DSH_SERVER_HOST` | 监听/端口映射地址，默认 `127.0.0.1`；局域网设为 `0.0.0.0` |
 | `DSH_SERVER_PORT` | 默认 `8080` |

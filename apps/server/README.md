@@ -72,6 +72,13 @@ Open <http://localhost:8080>. Set the same Server URL on your Host and Client an
 | `DSH_SERVER_ALLOW_REGISTRATION` | Accept self-service registrations; default `true` (set `false` for existing accounts only) |
 | `DSH_SERVER_REGISTRATION_CODE` | Optional invite code that every registration must carry |
 | `DSH_SERVER_MAX_ACCOUNTS` | Maximum stored accounts, 1–10000, default `256` |
+| `DSH_SERVER_ACCOUNT_EMAIL` | Address bound to the administrator account on start (enables administrator code sign-in) |
+| `DSH_SERVER_EMAIL_LOGIN` | Email-code sign-in policy: `off` (password only), `optional` (both, default), `required` (code only) |
+| `DSH_SERVER_SMTP_ENABLED` | Enable mail; inferred from `DSH_SERVER_SMTP_HOST` when unset |
+| `DSH_SERVER_SMTP_HOST` / `_PORT` / `_SECURE` | SMTP server, port and whether SSL/TLS applies (usually `true` for 465) |
+| `DSH_SERVER_SMTP_USER` / `_PASS` | SMTP login and the **mail provider's app password** (not a code this server issues) |
+| `DSH_SERVER_SMTP_FROM` | Sender, e.g. `DSH-Remote <no-reply@example.com>` |
+| `DSH_SERVER_SMTP_*` vs console | Environment values are defaults; fields saved in the console override them one by one |
 | `DSH_SERVER_PUBLIC_URL` | Browser-facing URL; default `http://localhost:8080` |
 | `DSH_SERVER_HOST` | Listen / port-binding address; default `127.0.0.1`, use `0.0.0.0` for LAN access |
 | `DSH_SERVER_PORT` | Default `8080` |
