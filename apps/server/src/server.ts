@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statfsSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { randomUUID } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
+import { arch, cpus, freemem, loadavg, platform, totalmem, uptime } from 'node:os'
 import { isIP } from 'node:net'
 import { z } from 'zod'
 import { deviceRegistrationRequestSchema, deviceRefreshRequestSchema } from '@dsh-remote/protocol'
@@ -37,6 +38,8 @@ export interface Config {
   maxAccounts?: number
   /** Injectable mail transport; tests replace it, production uses SMTP. */
   sendMail?: MailSender
+  /** SMTP defaults from the environment; the console can override them. */
+  smtp?: SmtpSettings
   trustedProxyIps?: readonly string[]
   helloTimeoutMs?: number
   heartbeatIntervalMs?: number
@@ -83,10 +86,15 @@ export type { GatewayTimingOptions, NormalizedGatewayOptions } from './config.js
 
 const loginSchema = z.object({ email: z.string().min(1).max(254), password: z.string().min(1).max(1024) }).strict()
 const registerSchema = z.object({
-  email: z.string().min(1).max(254),
+  username: z.string().min(1).max(64).optional(),
+  /** Registration mailbox; required (and verified) once SMTP is configured. */
+  email: z.string().max(254).optional(),
+  /** Email verification code. */
+  code: z.string().max(16).optional(),
+  inviteCode: z.string().max(256).optional(),
   password: z.string().min(1).max(1024),
-  code: z.string().max(256).optional(),
 }).strict()
+const registerCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const forgotSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const resetSchema = z.object({ email: z.string().min(1).max(254), code: z.string().min(1).max(16), password: z.string().min(1).max(1024) }).strict()
 const emailCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
@@ -201,12 +209,30 @@ export function createRemoteServer(config: Config) {
   const mail = config.sendMail ?? defaultSendMail
   const startedAt = Date.now()
   const serverVersion = 'self-hosted/0.6.3'
-  /** Outstanding email verification codes: purpose + account → code and expiry. */
+  /** SMTP defaults from the environment; console values win field by field. */
+  const envSmtp: SmtpSettings = config.smtp ?? {}
+  function effectiveSmtp(): SmtpSettings {
+    const stored = store.smtp()
+    const merged: SmtpSettings = { ...envSmtp }
+    for (const [key, value] of Object.entries(stored)) {
+      if (value === undefined || value === '') continue
+      ;(merged as Record<string, unknown>)[key] = value
+    }
+    return merged
+  }
+  const smtpSource = (): 'env' | 'settings' | 'none' => {
+    const stored = store.smtp()
+    const hasStored = Object.values(stored).some(value => value !== undefined && value !== '')
+    if (hasStored) return 'settings'
+    return smtpConfigured(envSmtp) ? 'env' : 'none'
+  }
+  /** Outstanding email verification codes: purpose key → code and expiry. */
   const emailCodes = new Map<string, { code: string; expires: number; attempts: number }>()
   function issueEmailCode(key: string): string {
     for (const [stored, entry] of emailCodes) if (entry.expires <= Date.now()) emailCodes.delete(stored)
     if (emailCodes.size >= 4096) throw new ApiError('RATE_LIMITED', 429)
-    const code = String(Math.floor(100000 + Math.random() * 900000))
+    // Cryptographically random six digits: the code is not derived from a clock.
+    const code = String(randomInt(0, 1_000_000)).padStart(6, '0')
     emailCodes.set(key, { code, expires: Date.now() + EMAIL_CODE_TTL_MS, attempts: 0 })
     return code
   }
@@ -221,19 +247,73 @@ export function createRemoteServer(config: Config) {
   }
   const siteInfo = () => {
     const site = store.site()
+    const smtp = effectiveSmtp()
     return {
       name: site.name ?? 'DeepSeek Harness Remote',
       description: site.description ?? 'DeepSeek Harness 的自建远程中继：Host 与客户端端到端加密连接。',
       announcement: site.announcement ?? '',
       footer: site.footer ?? '',
       registration: { enabled: allowRegistration, requiresCode: registrationCode !== '' },
+      email: { enabled: smtpConfigured(smtp), verificationRequired: allowRegistration && smtpConfigured(smtp) },
     }
   }
   const mailBrand = () => store.site().name ?? 'DeepSeek Harness Remote'
   async function sendCodeMail(to: string, code: string, purpose: string): Promise<void> {
-    const config = store.smtp()
-    if (!smtpConfigured(config)) throw new ApiError('SMTP_NOT_CONFIGURED', 400)
-    await mail(config, { to, subject: `[${mailBrand()}] ${purpose}`, text: `你的验证码是 ${code}，10 分钟内有效。如果这不是你本人操作，请忽略这封邮件。` })
+    const smtp = effectiveSmtp()
+    if (!smtpConfigured(smtp)) throw new ApiError('SMTP_NOT_CONFIGURED', 400)
+    await mail(smtp, { subject: `[${mailBrand()}] ${purpose}`, to, text: `你的验证码是 ${code}，10 分钟内有效。如果这不是你本人操作，请忽略这封邮件。` })
+  }
+  /** Sampling state for the console charts; driven by console requests, no timer. */
+  const metrics = {
+    cpu: { at: 0, idle: 0, total: 0 },
+    traffic: { at: Date.now(), rx: 0, tx: 0 },
+    history: [] as { t: number; rx: number; tx: number }[],
+  }
+  function cpuUsagePercent(): number {
+    let idle = 0, total = 0
+    for (const cpu of cpus()) {
+      const times = cpu.times
+      idle += times.idle
+      total += times.user + times.nice + times.sys + times.idle + times.irq
+    }
+    const previous = metrics.cpu
+    metrics.cpu = { at: Date.now(), idle, total }
+    if (previous.at === 0 || total <= previous.total) return 0
+    const idleDelta = idle - previous.idle
+    const totalDelta = total - previous.total
+    return totalDelta <= 0 ? 0 : Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 100)))
+  }
+  function trafficSample(): { rx: number; tx: number } {
+    const now = Date.now()
+    const seconds = Math.max(1, (now - metrics.traffic.at) / 1000)
+    const rx = Math.max(0, (gateway.traffic.rxBytes - metrics.traffic.rx) / seconds)
+    const tx = Math.max(0, (gateway.traffic.txBytes - metrics.traffic.tx) / seconds)
+    metrics.traffic = { at: now, rx: gateway.traffic.rxBytes, tx: gateway.traffic.txBytes }
+    metrics.history.push({ t: now, rx: Math.round(rx), tx: Math.round(tx) })
+    if (metrics.history.length > 120) metrics.history.shift()
+    return { rx: Math.round(rx), tx: Math.round(tx) }
+  }
+  function systemSnapshot() {
+    const memTotal = totalmem(), memFree = freemem()
+    let disk = { total: 0, free: 0, usedPercent: 0 }
+    try {
+      const stats = statfsSync('/')
+      const total = stats.blocks * stats.bsize
+      const free = stats.bavail * stats.bsize
+      disk = { total, free, usedPercent: total > 0 ? Math.round((1 - free / total) * 100) : 0 }
+    } catch { /* statfs is unavailable on some platforms */ }
+    return {
+      platform: platform(),
+      arch: arch(),
+      cpuCount: cpus().length,
+      cpuUsage: cpuUsagePercent(),
+      load: loadavg().map(value => Math.round(value * 100) / 100),
+      memory: { total: memTotal, free: memFree, usedPercent: memTotal > 0 ? Math.round((1 - memFree / memTotal) * 100) : 0 },
+      disk,
+      nodeVersion: process.version,
+      hostUptimeSeconds: Math.round(uptime()),
+      processUptimeSeconds: Math.round(process.uptime()),
+    }
   }
   const assets = readAssets()
   /** Account sessions: cookie value digest → owning account and expiry. */
@@ -354,12 +434,39 @@ export function createRemoteServer(config: Config) {
       res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return
     }
+    if (method === 'POST' && path === '/api/v1/auth/register/code') {
+      if (!allowRegistration) throw new ApiError('REGISTRATION_CLOSED', 403)
+      rate(`register-code:${client}`, 5)
+      const request = registerCodeSchema.parse(await body(req))
+      const email = request.email.trim().toLowerCase()
+      if (!validEmail(email)) throw new ApiError('INVALID_EMAIL', 400)
+      if (store.accountByEmail(email) !== null) throw new ApiError('EMAIL_IN_USE', 409)
+      const code = issueEmailCode(`register:${email}`)
+      await sendCodeMail(email, code, '注册验证码')
+      json(res, 200, { status: 'ok' }); return
+    }
     if (method === 'POST' && path === '/api/v1/auth/register') {
       if (!allowRegistration) throw new ApiError('REGISTRATION_CLOSED', 403)
       rate(`register:${client}`, 10)
       const request = registerSchema.parse(await body(req))
-      if (registrationCode !== '' && !equal(request.code?.trim() ?? '', registrationCode)) throw new ApiError('REGISTRATION_CODE_INVALID', 403)
-      const account = store.createAccount(request.email, request.password)
+      if (registrationCode !== '' && !equal(request.inviteCode?.trim() ?? '', registrationCode)) throw new ApiError('REGISTRATION_CODE_INVALID', 403)
+      const smtp = effectiveSmtp()
+      const emailRequired = smtpConfigured(smtp)
+      // Older clients send the account name in `email`. That legacy shape never
+      // carried a mailbox, so it is read as a username and not format-checked.
+      const legacyNameOnly = request.username === undefined && !emailRequired
+      const username = (request.username ?? (legacyNameOnly ? (request.email ?? '') : '')).trim()
+      if (username === '') throw new ApiError('INVALID_ACCOUNT')
+      const email = legacyNameOnly ? '' : (request.email?.trim().toLowerCase() ?? '')
+      if (emailRequired) {
+        if (!validEmail(email)) throw new ApiError('INVALID_EMAIL', 400)
+        if (store.accountByEmail(email) !== null) throw new ApiError('EMAIL_IN_USE', 409)
+        if (!checkEmailCode(`register:${email}`, request.code ?? '')) throw new ApiError('CODE_INVALID', 400)
+      } else if (email !== '' && !validEmail(email)) {
+        throw new ApiError('INVALID_EMAIL', 400)
+      }
+      const account = store.createAccount(username, request.password)
+      if (emailRequired) store.bindEmail(account, email)
       const session = startSession(account)
       res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return
@@ -453,20 +560,40 @@ export function createRemoteServer(config: Config) {
       const overview = () => {
         const accounts = store.listAccounts()
         const devices = accounts.flatMap(entry => store.list(entry.account))
-        const online = devices.filter(device => gateway.peers.has(device.descriptor.deviceId))
+        const online = (device: { descriptor: { deviceId: string } }) => gateway.peers.has(device.descriptor.deviceId)
+        const hosts = devices.filter(device => device.descriptor.role === 'host')
+        const clients = devices.filter(device => device.descriptor.role === 'client')
+        const rates = trafficSample()
+        const smtp = effectiveSmtp()
         return {
           version: serverVersion,
           startedAt,
           uptimeMs: Date.now() - startedAt,
-          accounts: accounts.length,
-          admins: accounts.filter(entry => entry.role === 'admin').length,
-          devices: devices.length,
-          onlineDevices: online.length,
-          hosts: devices.filter(device => device.descriptor.role === 'host').length,
-          clients: devices.filter(device => device.descriptor.role === 'client').length,
-          smtpConfigured: smtpConfigured(store.smtp()),
-          registration: { enabled: allowRegistration, requiresCode: registrationCode !== '' },
           serverUrl: url.origin,
+          accounts: {
+            total: accounts.length,
+            admins: accounts.filter(entry => entry.role === 'admin').length,
+            users: accounts.filter(entry => entry.role !== 'admin').length,
+          },
+          devices: {
+            total: devices.length,
+            online: devices.filter(online).length,
+            hosts: hosts.length,
+            hostsOnline: hosts.filter(online).length,
+            clients: clients.length,
+            clientsOnline: clients.filter(online).length,
+          },
+          network: {
+            rxBytes: gateway.traffic.rxBytes,
+            txBytes: gateway.traffic.txBytes,
+            rxRate: rates.rx,
+            txRate: rates.tx,
+            peers: gateway.peers.size,
+            history: [...metrics.history],
+          },
+          system: systemSnapshot(),
+          email: { enabled: smtpConfigured(smtp), source: smtpSource(), verificationRequired: smtpConfigured(smtp) && allowRegistration },
+          registration: { enabled: allowRegistration, requiresCode: registrationCode !== '' },
         }
       }
       if (method === 'GET' && path === '/api/v1/admin/overview') { json(res, 200, overview()); return }
@@ -488,21 +615,21 @@ export function createRemoteServer(config: Config) {
       }
       if (path === '/api/v1/admin/smtp') {
         if (method === 'GET') {
-          const smtp = store.smtp()
+          const effective = effectiveSmtp()
           // Never echo the stored password; the form only needs to know it is set.
-          json(res, 200, { ...smtp, pass: smtp.pass ? '********' : '' })
+          json(res, 200, { ...effective, pass: effective.pass ? '********' : '', source: smtpSource() })
           return
         }
         if (method === 'PUT' || method === 'POST') {
           const patch = smtpSchema.parse(await body(req)) as SmtpSettings
           if (patch.pass === '********') delete patch.pass
-          json(res, 200, store.setSmtp(patch)); return
+          const saved = store.setSmtp(patch)
+          json(res, 200, { ...saved, pass: saved.pass ? '********' : '', source: smtpSource() }); return
         }
       }
       if (method === 'POST' && path === '/api/v1/admin/smtp/test') {
-        const smtp = store.smtp()
         try {
-          await verifySmtp(smtp)
+          await verifySmtp(effectiveSmtp())
           json(res, 200, { status: 'ok' })
         } catch (error) {
           json(res, 400, { error: { code: 'SMTP_FAILED', message: error instanceof Error ? error.message : 'SMTP verification failed', retryable: false } })

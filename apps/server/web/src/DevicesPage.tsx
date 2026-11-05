@@ -3,7 +3,7 @@ import { Alert, Button, Card, Divider, Empty, Form, Input, Layout, Modal, Space,
 import { EditOutlined, GithubOutlined, SettingOutlined } from '@ant-design/icons'
 import type { TableColumnsType } from 'antd'
 import { useCallback, useEffect, useState } from 'react'
-import { api, RequestError, type Account, type Device, type DeviceList } from './api'
+import { api, RequestError, type Account, type Device, type DeviceList, type SiteInfo } from './api'
 import { ThemeToggle } from './ThemeToggle'
 import { SiteFooter } from './SiteFooter'
 const { Paragraph, Text, Title } = Typography
@@ -25,6 +25,7 @@ export function DevicesPage({ account, onSignedOut, onOpenAdmin }: { account: Ac
   const [passwordBusy, setPasswordBusy] = useState(false)
   const [settingsError, setSettingsError] = useState('')
   const [settingsNotice, setSettingsNotice] = useState('')
+  const [emailEnabled, setEmailEnabled] = useState<boolean>()
   const load = useCallback(async () => {
     setLoading(true); setError('')
     try { const data = await api<DeviceList>('/account/devices'); setResult(data); setUpdated(new Date().toLocaleTimeString('zh-CN')) }
@@ -77,6 +78,7 @@ export function DevicesPage({ account, onSignedOut, onOpenAdmin }: { account: Ac
     setSettingsOpen(true); setSettingsError(''); setSettingsNotice('')
     emailForm.setFieldsValue({ email: profile.email ?? '', code: '' })
     void refreshProfile()
+    void api<SiteInfo>('/site').then(info => setEmailEnabled(info.email.enabled)).catch(() => setEmailEnabled(undefined))
   }
   async function logout() {
     setLoggingOut(true)
@@ -121,7 +123,9 @@ export function DevicesPage({ account, onSignedOut, onOpenAdmin }: { account: Ac
       <Paragraph><Text type="secondary">账号：</Text><Text strong>{profile.account}</Text>{profile.isAdmin === true && <Tag color="blue" style={{ marginLeft: 8 }}>管理员</Tag>}</Paragraph>
       <Paragraph><Text type="secondary">绑定邮箱：</Text>{profile.email ? <>{profile.email} <Tag color="green">已验证</Tag></> : <Text type="secondary">未绑定</Text>}</Paragraph>
       <Divider orientation="left" plain>绑定 / 更换邮箱</Divider>
-      <Form form={emailForm} layout="vertical" requiredMark={false}>
+      {emailEnabled === false && <Alert type="warning" showIcon style={{ marginBottom: 16 }} message="管理员尚未配置邮件服务器，暂时无法绑定邮箱；绑定后才能用邮箱找回密码。" />}
+      {emailEnabled === undefined && <Paragraph type="secondary">正在检查邮件服务…</Paragraph>}
+      <Form form={emailForm} layout="vertical" requiredMark={false} disabled={emailEnabled !== true}>
         <Form.Item name="email" label="邮箱地址" rules={[{ required: true, whitespace: true, message: '请输入邮箱' }]}><Input placeholder="you@example.com" autoComplete="email" /></Form.Item>
         <Space align="end">
           <Form.Item name="code" label="验证码" rules={[{ required: true, message: '请输入验证码' }]}><Input placeholder="6 位验证码" maxLength={6} /></Form.Item>

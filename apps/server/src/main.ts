@@ -20,6 +20,18 @@ const logLevel = parseLogLevel(process.env.DSH_SERVER_LOG_LEVEL)
 
 /** Registration is open unless the deployment turns it off; an invite code gates it further. */
 const allowRegistration = !['0', 'false', 'no', 'off'].includes((process.env.DSH_SERVER_ALLOW_REGISTRATION ?? 'true').trim().toLowerCase())
+/** SMTP defaults; the administrator console can override any field. */
+const smtpPort = Number(process.env.DSH_SERVER_SMTP_PORT ?? '')
+const smtpHost = process.env.DSH_SERVER_SMTP_HOST?.trim() ?? ''
+const envSmtp = {
+  ...(smtpHost === '' ? {} : { host: smtpHost }),
+  ...(Number.isInteger(smtpPort) && smtpPort > 0 && smtpPort <= 65535 ? { port: smtpPort } : {}),
+  ...(process.env.DSH_SERVER_SMTP_SECURE === undefined ? {} : { secure: !['0', 'false', 'no', 'off'].includes(process.env.DSH_SERVER_SMTP_SECURE.trim().toLowerCase()) }),
+  ...(process.env.DSH_SERVER_SMTP_USER === undefined ? {} : { user: process.env.DSH_SERVER_SMTP_USER }),
+  ...(process.env.DSH_SERVER_SMTP_PASS === undefined ? {} : { pass: process.env.DSH_SERVER_SMTP_PASS }),
+  ...(process.env.DSH_SERVER_SMTP_FROM === undefined ? {} : { from: process.env.DSH_SERVER_SMTP_FROM }),
+  enabled: !['0', 'false', 'no', 'off'].includes((process.env.DSH_SERVER_SMTP_ENABLED ?? (smtpHost === '' ? 'false' : 'true')).trim().toLowerCase()),
+}
 const parsedMaxAccounts = Number(process.env.DSH_SERVER_MAX_ACCOUNTS ?? '256')
 const maxAccounts = Number.isInteger(parsedMaxAccounts) && parsedMaxAccounts >= 1 && parsedMaxAccounts <= 10_000 ? parsedMaxAccounts : 256
 
@@ -38,6 +50,7 @@ const app = createRemoteServer({
   allowRegistration,
   registrationCode: process.env.DSH_SERVER_REGISTRATION_CODE ?? '',
   maxAccounts,
+  smtp: envSmtp,
 })
 app.server.listen(port, process.env.DSH_SERVER_HOST ?? '127.0.0.1', () => console.info(`Remote Server listening on port ${port}`))
 app.server.on('error', () => { console.error('Remote Server could not listen. Check address and port.'); process.exitCode = 1; app.gateway.close() })

@@ -101,6 +101,8 @@ function errorCode(error: unknown): string | undefined {
 
 export class Gateway {
   readonly peers = new Map<string, Peer>()
+  /** Cumulative bytes over authenticated WebSocket traffic (relay + control). */
+  readonly traffic = { rxBytes: 0, txBytes: 0 }
   private links = new Map<string, Link>()
   private wss = new WebSocketServer({ noServer: true, maxPayload: MAX_RELAY_FRAME_BYTES, perMessageDeflate: false })
   private heartbeat: ReturnType<typeof setInterval>
@@ -176,7 +178,9 @@ export class Gateway {
   private send(peer: Peer, frame: ControlFrame): void {
     if (peer.ws.readyState !== WebSocket.OPEN) return
     if (peer.ws.bufferedAmount > 4 * MAX_RELAY_FRAME_BYTES) { this.disconnect(peer.id, 'SLOW_CONSUMER'); return }
-    peer.ws.send(JSON.stringify(frame))
+    const text = JSON.stringify(frame)
+    peer.ws.send(text)
+    this.traffic.txBytes += Buffer.byteLength(text)
   }
   private drop(link: Link, code: string): void {
     this.links.delete(link.id)
@@ -311,6 +315,7 @@ export class Gateway {
       try {
         if (binary) throw new ApiError('INVALID_MESSAGE')
         const text = raw.toString()
+        this.traffic.rxBytes += Buffer.byteLength(text)
         if (Date.now() - windowStart >= 1000) { windowStart = Date.now(); frames = 0; bytes = 0 }
         if (++frames > 512 || (bytes += Buffer.byteLength(text)) > 16 * MAX_RELAY_FRAME_BYTES) throw new ApiError('RATE_LIMITED')
         const envelope = JSON.parse(text) as { v?: unknown }

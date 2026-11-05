@@ -1436,3 +1436,29 @@
 /* Auth extras */
 .auth-modal-actions { display: flex; gap: 12px; justify-content: flex-end; }
 .auth-switch-mode .auth-switch-secondary { margin-left: 16px; }
+
+/* Admin console: overview cards, traffic chart, resources */
+.admin-section-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin-bottom: 20px; }
+.admin-stat-card .ant-card-body { padding: 18px 20px; }
+.admin-stat-label { font-size: 13px; color: var(--color-text-muted); }
+.admin-stat-value { font-size: 30px; font-weight: 650; line-height: 1.25; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+.admin-stat-total { font-size: 16px; font-weight: 500; color: var(--color-text-muted); }
+.admin-stat-note { font-size: 12px; color: var(--color-text-muted); }
+.traffic-summary { display: flex; flex-wrap: wrap; gap: 32px; margin-bottom: 12px; }
+.traffic-summary > div { display: flex; align-items: baseline; gap: 8px; }
+.traffic-key-up { color: #16a34a; font-size: 13px; }
+.traffic-key-down { color: #2563eb; font-size: 13px; }
+.traffic-value { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.traffic-total { font-size: 12px; color: var(--color-text-muted); }
+.traffic-chart svg { display: block; width: 100%; height: 96px; }
+.traffic-axis { stroke: var(--color-border); stroke-width: 1; }
+.traffic-line { fill: none; stroke-width: 1.8; }
+.traffic-up { stroke: #16a34a; }
+.traffic-down { stroke: #2563eb; }
+.traffic-legend { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 8px; font-size: 12px; color: var(--color-text-muted); }
+.traffic-legend-up { color: #16a34a; }
+.traffic-legend-down { color: #2563eb; }
+.traffic-chart-empty { padding: 24px 0; text-align: center; color: var(--color-text-muted); font-size: 13px; }
+.resource-row { display: grid; grid-template-columns: 1fr 1fr; align-items: center; gap: 16px; margin-bottom: 10px; font-size: 13px; }
+.resource-row .ant-progress { margin: 0; }
+.admin-resource-note { margin-top: 12px; margin-bottom: 0; font-size: 12px; }

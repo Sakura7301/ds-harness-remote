@@ -17,20 +17,31 @@ export interface SiteInfo {
   announcement: string
   footer: string
   registration: RegistrationInfo
+  email: { enabled: boolean; verificationRequired: boolean }
 }
+export interface NetworkPoint { t: number; rx: number; tx: number }
 export interface AdminOverview {
   version: string
   startedAt: number
   uptimeMs: number
-  accounts: number
-  admins: number
-  devices: number
-  onlineDevices: number
-  hosts: number
-  clients: number
-  smtpConfigured: boolean
-  registration: RegistrationInfo
   serverUrl: string
+  accounts: { total: number; admins: number; users: number }
+  devices: { total: number; online: number; hosts: number; hostsOnline: number; clients: number; clientsOnline: number }
+  network: { rxBytes: number; txBytes: number; rxRate: number; txRate: number; peers: number; history: NetworkPoint[] }
+  system: {
+    platform: string
+    arch: string
+    cpuCount: number
+    cpuUsage: number
+    load: number[]
+    memory: { total: number; free: number; usedPercent: number }
+    disk: { total: number; free: number; usedPercent: number }
+    nodeVersion: string
+    hostUptimeSeconds: number
+    processUptimeSeconds: number
+  }
+  email: { enabled: boolean; source: 'env' | 'settings' | 'none'; verificationRequired: boolean }
+  registration: RegistrationInfo
 }
 export interface AdminAccount {
   account: string
@@ -42,6 +53,7 @@ export interface AdminAccount {
   devices: number
 }
 export interface SmtpSettings {
+  source?: 'env' | 'settings' | 'none'
   enabled?: boolean
   host?: string
   port?: number
