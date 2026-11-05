@@ -28,6 +28,7 @@ import {
   type LogEntry,
 } from '../src/logger.js'
 import { MAX_ICE_CANDIDATES_PER_CONNECTION } from '../src/gateway.js'
+import { parseIceConfig } from '../src/ice.js'
 
 const account = 'owner@example.com', password = 'local-test-password'
 let app: ReturnType<typeof createRemoteServer>, dir: string, base: string, accountToken: string
@@ -95,13 +96,14 @@ class Wire {
   }
 }
 const fullCapabilities = ['transport.lan', 'transport.p2p', 'transport.turn', 'transport.relay']
+const fullPreferredTransports = ['lan', 'p2p', 'turn', 'relay']
 async function socket(d: Awaited<ReturnType<typeof device>>, overrides = {}) {
   const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws/v1/connect'); sockets.push(ws)
   const wire = new Wire(ws); await once(ws, 'open')
   wire.send('hello', { role: d.role, deviceId: d.deviceId, accessToken: d.accessToken, protocols: [1], capabilities: fullCapabilities, clientVersion: d.clientVersion, ...overrides })
   return wire
 }
-async function connection(options: { hostCapabilities?: string[]; clientCapabilities?: string[] } = {}) {
+async function connection(options: { hostCapabilities?: string[]; clientCapabilities?: string[]; preferredTransports?: string[] } = {}) {
   const h = await device('host'), c = await device()
   const host = await socket(h, options.hostCapabilities === undefined ? {} : { capabilities: options.hostCapabilities })
   const client = await socket(c, options.clientCapabilities === undefined ? {} : { capabilities: options.clientCapabilities })
@@ -109,12 +111,12 @@ async function connection(options: { hostCapabilities?: string[]; clientCapabili
   expect(ack).toMatchObject({ webrtcEnabled: true })
   expect(ack.capabilities).toEqual(expect.arrayContaining(['transport.relay']))
   await client.next('hello.ack')
-  client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: ['relay'] })
+  client.send('connect.request', { hostDeviceId: h.deviceId, preferredTransports: options.preferredTransports ?? ['relay'] })
   const incoming = await host.next('connect.incoming')
   expect(incoming.clientIdentityKey).toBe(c.identityKey)
   host.send('connect.accepted', { connectionId: incoming.connectionId })
   const { connectionId } = await client.next('connect.accepted')
-  return { h, c, host, client, connectionId }
+  return { h, c, host, client, connectionId, incoming }
 }
 async function handshake(ctx: Awaited<ReturnType<typeof connection>>) {
   const { h, c, host, client, connectionId } = ctx
@@ -414,7 +416,7 @@ describe('webrtc signaling and TURN credentials', () => {
   })
 
   it('forwards ordered WebRTC signaling and transport selection', async () => {
-    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
     ctx.client.send('signal.offer', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, sdp: 'v=0 offer' })
     expect(await ctx.host.next('signal.offer')).toMatchObject({ connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId })
     ctx.host.send('signal.answer', { connectionId: ctx.connectionId, targetDeviceId: ctx.c.deviceId, sdp: 'v=0 answer' })
@@ -430,13 +432,13 @@ describe('webrtc signaling and TURN credentials', () => {
   })
 
   it('downgrades LAN to P2P for a host that did not negotiate transport.lan', async () => {
-    const ctx = await connection({ hostCapabilities: ['transport.p2p', 'transport.relay'], clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: ['transport.p2p', 'transport.relay'], clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
     ctx.client.send('transport.selected', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, transport: 'lan' })
     expect(await ctx.host.next('transport.selected')).toMatchObject({ transport: 'p2p' })
   })
 
   it('tolerates a responder transport selection without dropping the link', async () => {
-    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
     ctx.client.send('transport.selected', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, transport: 'lan' })
     expect(await ctx.host.next('transport.selected')).toMatchObject({ transport: 'lan' })
     // The Host (responder) also announces its own selection; it must be
@@ -448,7 +450,7 @@ describe('webrtc signaling and TURN credentials', () => {
   })
 
   it('does not forward signaling to a host that cannot use WebRTC', async () => {
-    const ctx = await connection({ hostCapabilities: ['transport.relay'], clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: ['transport.relay'], clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
     ctx.client.send('signal.offer', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, sdp: 'v=0 offer' })
     ctx.client.send('signal.ice', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, candidate: candidate(0) })
     await new Promise(resolve => setTimeout(resolve, 100))
@@ -458,8 +460,33 @@ describe('webrtc signaling and TURN credentials', () => {
     expect(await ctx.host.next('relay')).toMatchObject({ connectionId: ctx.connectionId })
   })
 
+  it('drops signaling on a relay-only link without closing the connection', async () => {
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities, preferredTransports: ['relay'] })
+    // Both peers support WebRTC, but this link only negotiated Relay (e.g. a
+    // force-relay Client). Signaling must be dropped instead of forwarded: the
+    // Host treats unsolicited signaling as a protocol violation that would
+    // close its whole Control connection.
+    ctx.client.send('signal.offer', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, sdp: 'v=0 offer' })
+    ctx.client.send('signal.ice', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, candidate: candidate(0) })
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(ctx.host.messages.filter(message => message.type === 'signal.offer' || message.type === 'signal.ice')).toHaveLength(0)
+    expect(ctx.client.messages.filter(message => message.type === 'error')).toHaveLength(0)
+    await handshake(ctx)
+    ctx.client.send('relay', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, counter: 0, ciphertext: 'AQIDBA' })
+    expect(await ctx.host.next('relay')).toMatchObject({ connectionId: ctx.connectionId })
+  })
+
+  it('narrows connect.incoming to the transports both peers support', async () => {
+    const ctx = await connection({ hostCapabilities: ['transport.lan', 'transport.p2p', 'transport.relay'], clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
+    // The TURN transport is also absent because this test Server has no TURN
+    // deployment configured, so the intersection cannot include it.
+    expect(ctx.incoming.preferredTransports).toEqual(['lan', 'p2p', 'relay'])
+    ctx.client.send('transport.selected', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, transport: 'turn' })
+    expect((await ctx.client.next('error')).code).toBe('CAPABILITY_NOT_SUPPORTED')
+  })
+
   it('enforces the per-connection ICE candidate limit', async () => {
-    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
     for (let index = 0; index < MAX_ICE_CANDIDATES_PER_CONNECTION; index++) {
       ctx.client.send('signal.ice', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, candidate: candidate(index) })
     }
@@ -478,7 +505,10 @@ describe('webrtc signaling and TURN credentials', () => {
       },
     })
     accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
-    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities })
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities, preferredTransports: fullPreferredTransports })
+    // Negotiate TURN before selecting it; the diagnostic must survive forwarding.
+    ctx.client.send('transport.selected', { connectionId: ctx.connectionId, targetDeviceId: ctx.h.deviceId, transport: 'turn', turnNode: 'turn.example.test:3478' })
+    expect(await ctx.host.next('transport.selected')).toMatchObject({ transport: 'turn', turnNode: 'turn.example.test:3478' })
     const before = Date.now()
     const result = await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, ctx.c.accessToken)
     expect(result.status).toBe(200)
@@ -497,6 +527,81 @@ describe('webrtc signaling and TURN credentials', () => {
 
     await handshake(ctx)
     expect((await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, ctx.c.accessToken)).status).toBe(404)
+  })
+
+  it('issues configured static TURN credentials', async () => {
+    await app.close()
+    await start(password, [], {
+      ice: {
+        stunUrls: [],
+        turnUrls: ['turn:turn.example.test:3478'],
+        turnSecret: undefined,
+        turnUsername: 'remote',
+        turnPassword: 'static-turn-password',
+        turnTtlSeconds: 120,
+      },
+    })
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    const ctx = await connection({ hostCapabilities: fullCapabilities, clientCapabilities: fullCapabilities })
+    const result = await request(`/turn/credentials?connection_id=${ctx.connectionId}`, 'GET', undefined, ctx.c.accessToken)
+    expect(result.status).toBe(200)
+    expect(result.data.iceServers).toEqual([{ urls: 'turn:turn.example.test:3478', username: 'remote', credential: 'static-turn-password' }])
+  })
+
+  it('rejects partial TURN credential configuration at startup', async () => {
+    await runScenarios([
+      {
+        name: 'urls without any credential source',
+        run: () => {
+          expect(() => parseIceConfig({ DSH_SERVER_TURN_URLS: 'turn:turn.example.test:3478' })).toThrow(/DSH_SERVER_TURN_URLS requires/)
+        },
+      },
+      {
+        name: 'secret together with static credentials',
+        run: () => {
+          expect(() => parseIceConfig({
+            DSH_SERVER_TURN_URLS: 'turn:turn.example.test:3478',
+            DSH_SERVER_TURN_SECRET: 'secret',
+            DSH_SERVER_TURN_USERNAME: 'remote',
+            DSH_SERVER_TURN_PASSWORD: 'password',
+          })).toThrow(/not both/)
+        },
+      },
+      {
+        name: 'static username without password',
+        run: () => {
+          expect(() => parseIceConfig({
+            DSH_SERVER_TURN_URLS: 'turn:turn.example.test:3478',
+            DSH_SERVER_TURN_USERNAME: 'remote',
+          })).toThrow(/together/)
+        },
+      },
+      {
+        name: 'static credentials without urls',
+        run: () => {
+          expect(() => parseIceConfig({
+            DSH_SERVER_TURN_USERNAME: 'remote',
+            DSH_SERVER_TURN_PASSWORD: 'password',
+          })).toThrow(/DSH_SERVER_TURN_URLS is required/)
+        },
+      },
+      {
+        name: 'secret without urls',
+        run: () => {
+          expect(() => parseIceConfig({ DSH_SERVER_TURN_SECRET: 'secret' })).toThrow(/DSH_SERVER_TURN_URLS is required/)
+        },
+      },
+      {
+        name: 'accepts a complete static pair',
+        run: () => {
+          expect(parseIceConfig({
+            DSH_SERVER_TURN_URLS: 'turn:turn.example.test:3478',
+            DSH_SERVER_TURN_USERNAME: 'remote',
+            DSH_SERVER_TURN_PASSWORD: 'password',
+          })).toMatchObject({ turnUsername: 'remote', turnPassword: 'password', turnSecret: undefined })
+        },
+      },
+    ])
   })
 
   it('does not issue TURN credentials before the host accepts the connection', async () => {

@@ -10,7 +10,7 @@
 
 ### Claude ACP Host 实验性接入（Issue #125）
 
-`claude` 是独立 ACP backend ID，默认关闭，只使用现有加密 `agent.acp.*` 数据面及固定方法 allowlist；`initialize`、`session/new`、`session/prompt` 的 backend 可显式选择 `claude`。不得按命令名称猜测后端或在其不可用时回退到 Cursor。Host 使用本机预授权的 `claude-agent-acp` stdio adapter，不发送 Cursor `authenticate(cursor_login)`。权限响应仍仅允许现有单次允许/拒绝契约。Host 通过固定 `dsh/workspaceList` / `dsh/sessionList` 使用上游 ACP `session/list` 的分页目录与 Session authority；只接受 Host realpath 验证的真实 cwd。Claude `session/load` 必须显式指定 backend，并由 Host catalog 或本机已创建的 Session 确认 cwd，不能接受 Client 自报路径；活动回复期间禁止重新 load，独立 history 读取不受此限制。`dsh/sessionHistory` 可使用 `claude:<native-session-id>`，前缀必须匹配 backend；历史只经独立临时 ACP process 的 `session/load` replay 获取，不读本机 transcript 文件，最多 8 MiB / 10,000 更新，超限显式失败，读取失败不得返回成功的部分历史或伪造空历史。保留最多 30 个 live/loading Session，以及一个临时 history process；重复 load 不重放污染 live stream。`session/cancel` 使用标准无请求 ID 的 notification；Gateway 同步撤销该会话待审批句柄并隔离迟到权限请求，其他会话/后端不受影响，最终完成状态由上游 `cancelled` 确认，不伪造停止成功。Claude Desktop/Android 使用 `claude:cwd:` 工作区与 `claude:` 会话前缀，仅作客户端内存投影。模型目录与切换复用下述固定 `dsh/sessionModels` / `dsh/selectModel`，不开放 Claude 图片、文件或终端扩展。恢复会话发送 Prompt 前，Host 必须使用可信 cwd 加载；准备期间取消不启动迟到回复，也不清除后续重试。加密跨设备及原生设备验收仍待完成。
+`claude` 是独立 ACP backend ID，默认关闭，只使用现有加密 `agent.acp.*` 数据面及固定方法 allowlist；`initialize`、`session/new`、`session/prompt` 的 backend 可显式选择 `claude`。不得按命令名称猜测后端或在其不可用时回退到 Cursor。Host 使用本机预授权的 `claude-agent-acp` stdio adapter，不发送 Cursor `authenticate(cursor_login)`。权限响应仍仅允许现有单次允许/拒绝契约。Host 通过固定 `dsh/workspaceList` / `dsh/sessionList` 使用上游 ACP `session/list` 的分页目录与 Session authority；只接受 Host realpath 验证的真实 cwd。Claude `session/load` 必须显式指定 backend，并由 Host catalog 或本机已创建的 Session 确认 cwd，不能接受 Client 自报路径；活动回复期间禁止重新 load，独立 history 读取不受此限制。`dsh/sessionHistory` 可使用 `claude:<native-session-id>`，前缀必须匹配 backend；历史只经独立临时 ACP process 的 `session/load` replay 获取，不读本机 transcript 文件，最多 8 MiB / 10,000 更新，超限显式失败，读取失败不得返回成功的部分历史或伪造空历史。保留最多 30 个 live/loading Session，以及一个临时 history process；重复 load 不重放污染 live stream。`session/cancel` 使用标准无请求 ID 的 notification；Gateway 同步撤销该会话待审批句柄并隔离迟到权限请求，其他会话/后端不受影响，最终完成状态由上游 `cancelled` 确认，不伪造停止成功。Claude Desktop/Android 使用 `claude:cwd:` 工作区与 `claude:` 会话前缀，仅作客户端内存投影。模型目录与切换复用下述固定 `dsh/sessionModels` / `dsh/selectModel`，Claude 图片输入暂不支持；直接 Files/Terminal 复用 Host 共享工作区桥接及路径、连接和终端归属校验。恢复会话发送 Prompt 前，Host 必须使用可信 cwd 加载；准备期间取消不启动迟到回复，也不清除后续重试。加密跨设备及原生设备验收仍待完成。
 
 ## 0. 文档地位与仓库边界（规范性）
 
@@ -518,6 +518,15 @@ WebRTC DataChannel 建立后，Initiator 必须先发送 `transport.selected`，
 `transport.selected.payload.transport` 的允许值为 `lan | p2p | turn | relay`。`lan` 是一等
 线协议值，双方声明 `transport.lan` capability 时必须端到端保留；Server 仅可为未声明该
 capability、仍只接受 `p2p | turn | relay` 的旧 RC2 Host 将 `lan` 兼容降级为 `p2p`。
+
+Initiator 的 `transport.selected` 可携带可选 `turnNode`（实际使用的 TURN relay 主机名，
+最长 253 字符，仅诊断用途），Server 转发时必须端到端保留，不得剥除。
+
+Responder 在自己的数据通道打开后也会上报一条 `transport.selected` 作为数据面通知。该上报
+以 Responder 本机的 ICE 路径为准，可能不在该链路协商出的传输集合内（例如链路只协商了
+`turn | relay`，而两端实际走 LAN）；Server 必须接受来自链路任一端的该帧，对不在协商集合内
+的上报按通知忽略，不得据此关闭连接或丢弃链路。Initiator（Client）的选择仍是绑定的权威
+来源，不在协商集合内时按协议拒绝。
 
 Host 必须要求 `authorization` 为 `account`，校验 identityKey 格式，并通过受 membership
 保护的设备详情接口确认 Client descriptor。本机已有相同 deviceId 但公钥不同则必须拒绝；

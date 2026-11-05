@@ -64924,7 +64924,10 @@ var signalIcePayloadSchema = external_exports.object({
 var transportSelectedPayloadSchema = external_exports.object({
   connectionId: external_exports.string().min(1),
   targetDeviceId: external_exports.string().min(1),
-  transport: selectedTransportEnum
+  transport: selectedTransportEnum,
+  /** Relay hostname the initiator actually used when transport is "turn"
+   *  (best-effort, from ICE stats; absent for other transports). */
+  turnNode: external_exports.string().min(1).max(253).optional()
 });
 var pingPongPayloadSchema = external_exports.object({
   nonce: external_exports.string().min(1)
@@ -67459,7 +67462,7 @@ var AcpVirtualHarness = class _AcpVirtualHarness {
     try {
       const args = carrierArgs(payload);
       if (ACP_TOOL_CALL_ENDPOINTS.some((item) => item === endpoint)) {
-        if (this.backend === "claude" || this.backend === "hermes" || !this.client.workspaceToolCall) return business(failure2("method-not-found", "The Host does not support ACP workspace tools."));
+        if (!this.client.workspaceToolCall) return business(failure2("method-not-found", "The Host does not support ACP workspace tools."));
         const sessionId = requiredString(args.workspaceFileScopeId ?? args.agentId ?? args.sessionId, "sessionId");
         return business(await this.client.workspaceToolCall(nativeAcpId(sessionId, this.backend), this.backend, endpoint, args, signal));
       }
@@ -67565,7 +67568,6 @@ var AcpVirtualHarness = class _AcpVirtualHarness {
   async open(endpoint, payload, signal) {
     const args = carrierArgs(payload);
     if (ACP_TOOL_STREAM_ENDPOINTS.some((item) => item === endpoint)) {
-      if (this.backend === "claude" || this.backend === "hermes") throw new Error(`${acpBackendLabel(this.backend)} workspace tools are not available.`);
       const sessionId = requiredString(args.workspaceFileScopeId ?? args.agentId ?? args.sessionId, "sessionId");
       const queue = new AsyncValueQueue(signal);
       const stream = await this.client.openStream(nativeAcpId(sessionId, this.backend), (frame) => {
@@ -96828,7 +96830,7 @@ var HostServerConnection = class {
       socket.onclose = (event) => {
         if (this.socket !== socket) return;
         const closeSemantics = classifyControlClose(event.code, event.reason);
-        retainOnClose = [1e3, 1001].includes(event.code) || closeSemantics.retryable && !closeSemantics.replaced;
+        retainOnClose = [1e3, 1001, 4007].includes(event.code) || closeSemantics.retryable && !closeSemantics.replaced;
         const close = async () => {
           await messageQueue.catch(() => void 0);
           if (this.stopped) {
@@ -97245,6 +97247,14 @@ var HostServerConnection = class {
     }
     tunnel.transport = payload.transport;
     tunnel.transportMode = tunnel.rtc.selectedPathMode();
+    if (payload.turnNode !== void 0) {
+      this.logger.info("client selected a turn relay", {
+        connectionId: shortId3(tunnel.connectionId),
+        peerDeviceId: shortId3(tunnel.peer.deviceId),
+        // Hostnames only: never echo arbitrary client-supplied text into logs.
+        turnNode: TURN_NODE_TEXT.test(payload.turnNode) ? payload.turnNode : "<invalid>"
+      });
+    }
     await this.resumePendingHandshake(tunnel);
   }
   canUseWebRtc() {
@@ -97681,6 +97691,7 @@ function objectValue(value, key) {
 function shortId3(value) {
   return value.length <= 12 ? value : `${value.slice(0, 8)}\u2026${value.slice(-4)}`;
 }
+var TURN_NODE_TEXT = /^[A-Za-z0-9.[\]:-]+$/;
 function asError2(error62) {
   return error62 instanceof Error ? error62 : new Error("Unknown Server connection error.");
 }
