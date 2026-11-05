@@ -12,6 +12,9 @@
 .workspace-page-header > div { min-width: 0; }
 .selfhost-device-name { display: inline-block; max-width: 240px; overflow-wrap: anywhere; }
 .selfhost-caption { margin-top: 20px; }
+.auth-switch-mode { margin-top: 18px; text-align: center; }
+.auth-switch-link { padding: 0; border: 0; background: none; font: inherit; font-size: 14px; color: var(--color-text-muted); cursor: pointer; }
+.auth-switch-link:hover { color: var(--color-primary-strong); text-decoration: underline; }
 
 /* Home */
 

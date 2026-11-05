@@ -2,7 +2,7 @@
 
 **English** · [中文](README.zh.md)
 
-A single-account Remote Server with WebRTC (LAN / P2P / TURN) and end-to-end encrypted Relay, configured through environment variables. Its Web UI includes a landing page, sign-in, and device status page. The Server is deployed separately from the Host plugin bundle.
+A multi-account Remote Server with WebRTC (LAN / P2P / TURN) and end-to-end encrypted Relay. The environment variables provision one bootstrap account (created or re-keyed on start), and visitors can register their own accounts from the sign-in page by default. Its Web UI includes a landing page, sign-in/registration, and device status page. Devices and connections are isolated per account, and the Server is deployed separately from the Host plugin bundle.
 
 This remains a small self-hosted Server that we intend to maintain. The product shape of the full Server Web is still evolving, so this repository does not promise to open source the current or future full site.
 
@@ -63,12 +63,15 @@ cd apps/server
 node --env-file=.env dist/main.js
 ```
 
-Open <http://localhost:8080>. Set the same Server URL on your Host and Client, then sign in with the same account. Use an email address as the account name for compatibility with existing clients.
+Open <http://localhost:8080>. Set the same Server URL on your Host and Client and sign in with the **same account**: only devices registered under one account can reach each other, and cross-account requests are refused. Use an email address as the account name for compatibility with existing clients.
 
 | Variable | Purpose / default |
 | --- | --- |
 | `DSH_SERVER_ACCOUNT` | Required login account |
-| `DSH_SERVER_PASSWORD` | Required; at least 12 characters |
+| `DSH_SERVER_PASSWORD` | Required; at least 12 characters. Re-keyed on every start, so changing it invalidates that account's device credentials |
+| `DSH_SERVER_ALLOW_REGISTRATION` | Accept self-service registrations; default `true` (set `false` for existing accounts only) |
+| `DSH_SERVER_REGISTRATION_CODE` | Optional invite code that every registration must carry |
+| `DSH_SERVER_MAX_ACCOUNTS` | Maximum stored accounts, 1–10000, default `256` |
 | `DSH_SERVER_PUBLIC_URL` | Browser-facing URL; default `http://localhost:8080` |
 | `DSH_SERVER_HOST` | Listen / port-binding address; default `127.0.0.1`, use `0.0.0.0` for LAN access |
 | `DSH_SERVER_PORT` | Default `8080` |

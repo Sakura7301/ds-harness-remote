@@ -18,6 +18,11 @@ const helloTimeoutMs = parseHelloTimeout(process.env.DSH_SERVER_HELLO_TIMEOUT_MS
 const forceTerminateGraceMs = parseForceTerminateGrace(process.env.DSH_SERVER_FORCE_TERMINATE_GRACE_MS)
 const logLevel = parseLogLevel(process.env.DSH_SERVER_LOG_LEVEL)
 
+/** Registration is open unless the deployment turns it off; an invite code gates it further. */
+const allowRegistration = !['0', 'false', 'no', 'off'].includes((process.env.DSH_SERVER_ALLOW_REGISTRATION ?? 'true').trim().toLowerCase())
+const parsedMaxAccounts = Number(process.env.DSH_SERVER_MAX_ACCOUNTS ?? '256')
+const maxAccounts = Number.isInteger(parsedMaxAccounts) && parsedMaxAccounts >= 1 && parsedMaxAccounts <= 10_000 ? parsedMaxAccounts : 256
+
 const app = createRemoteServer({
   account: process.env.DSH_SERVER_ACCOUNT ?? '',
   password: process.env.DSH_SERVER_PASSWORD ?? '',
@@ -30,6 +35,9 @@ const app = createRemoteServer({
   forceTerminateGraceMs,
   logLevel,
   ice: parseIceConfig(process.env),
+  allowRegistration,
+  registrationCode: process.env.DSH_SERVER_REGISTRATION_CODE ?? '',
+  maxAccounts,
 })
 app.server.listen(port, process.env.DSH_SERVER_HOST ?? '127.0.0.1', () => console.info(`Remote Server listening on port ${port}`))
 app.server.on('error', () => { console.error('Remote Server could not listen. Check address and port.'); process.exitCode = 1; app.gateway.close() })

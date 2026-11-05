@@ -238,6 +238,10 @@ Desktop，探测超时关闭 stdout 后可能触发 `write EPIPE`。探测脚本
 校验、真实安装版 Electron → Node → native WebRTC offer，以及 Web → 测试 Host 的 LAN
 加密连接通过。未验证本次 Windows/Linux runtime 探测。
 
+## Fork 说明（Sakura7301）
+
+本 fork 在 `apps/server` 上增加了**多账号自助注册**（上游把完整多账号 Server 划在仓库边界之外，因此这部分只在本 fork 维护，不要按上游 scope 提交 PR）。账号由 JSON state 的 `accounts` 保存；设备与 token 都记录所属账号，跨账号的设备列表、改名、presence 与 Host 连接一律 fail closed；环境变量账号仍作为启动时创建/重设密码的引导账号；旧的单账号 state（version 1）启动时自动迁移。新增配置：`DSH_SERVER_ALLOW_REGISTRATION`（默认开启）、`DSH_SERVER_REGISTRATION_CODE`、`DSH_SERVER_MAX_ACCOUNTS`。测试：`tests/server.test.ts` 的 "multi-account registration and isolation"。
+
 本文件面向在当前仓库工作的编码 Agent，记录仓库边界、项目结构、实现状态、验证命令和协作约束。用户产品说明与 Plugin 使用方式见 `README.md`。
 
 ## Repository Boundary

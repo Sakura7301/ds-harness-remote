@@ -1,6 +1,6 @@
 import { runScenarios, scenarioName } from '../../../scripts/test-scenarios.mjs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID, createHmac } from 'node:crypto'
@@ -69,12 +69,15 @@ async function rawStatus(headerLines: string[]): Promise<number> {
     socket.on('error', error => { clearTimeout(timer); reject(error) })
   })
 }
-async function device(role: 'host' | 'client' = 'client') {
+async function deviceAs(role: 'host' | 'client', token: string) {
   const keys = generateKeyPair()
   const descriptor = { deviceId: randomUUID(), identityKey: keys.publicKey, name: 'test-device', role, platform: 'linux', clientVersion: '0.4.15' }
-  const result = await request('/devices/register', 'POST', { v: 1, device: descriptor }, accountToken)
+  const result = await request('/devices/register', 'POST', { v: 1, device: descriptor }, token)
   expect(result.status).toBe(200)
   return { ...descriptor, keys, ...result.data }
+}
+async function device(role: 'host' | 'client' = 'client') {
+  return deviceAs(role, accountToken)
 }
 class Wire {
   messages: any[] = []
@@ -1029,5 +1032,75 @@ describe('gateway diagnostics redaction', () => {
     expect(log).toContain('ws_connection_closed')
     expect(log).toContain('"hasReason":true')
     expect(log).not.toContain('CANARY-REASON')
+  })
+})
+
+describe('multi-account registration and isolation', () => {
+  it('registers additional accounts and isolates devices between them', async () => {
+    const registered = await request('/auth/register', 'POST', { email: 'Other@Example.com', password: 'other-test-password' })
+    expect(registered.status).toBe(200)
+    expect(registered.data.account).toBe('other@example.com')
+    const otherToken = registered.data.token
+    const otherHost = await deviceAs('host', otherToken)
+    expect((await request('/account/devices', 'GET', undefined, otherToken)).data.items.map((item: { deviceId: string }) => item.deviceId)).toEqual([otherHost.deviceId])
+    // The bootstrap account lists only its own (empty) shelf.
+    expect((await request('/account/devices', 'GET', undefined, accountToken)).data.items).toEqual([])
+    // Cross-account administration and lookups fail closed.
+    expect((await request(`/devices/${otherHost.deviceId}/name`, 'POST', { name: 'stolen' }, accountToken)).status).toBe(404)
+    const mine = await device()
+    expect((await request(`/devices/${otherHost.deviceId}`, 'GET', undefined, mine.accessToken)).status).toBe(404)
+    // Duplicate registration and wrong passwords are refused.
+    expect((await request('/auth/register', 'POST', { email: 'other@example.com', password: 'other-test-password' })).status).toBe(409)
+    expect((await request('/auth/login', 'POST', { email: 'other@example.com', password: 'not-the-password' })).status).toBe(401)
+    expect((await request('/auth/login', 'POST', { email: 'nobody@example.com', password: 'other-test-password' })).status).toBe(401)
+    // The new account survives a restart.
+    await app.close(); await start()
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    expect((await request('/auth/login', 'POST', { email: 'other@example.com', password: 'other-test-password' })).status).toBe(200)
+  })
+  it('refuses a client reaching a host that belongs to another account', async () => {
+    const other = await request('/auth/register', 'POST', { email: 'other@example.com', password: 'other-test-password' })
+    const otherHost = await deviceAs('host', other.data.token)
+    const host = await socket(otherHost)
+    await host.next('hello.ack')
+    const client = await socket(await device())
+    await client.next('hello.ack')
+    client.send('connect.request', { hostDeviceId: otherHost.deviceId, preferredTransports: ['relay'] })
+    expect((await client.next('error')).code).toBe('MEMBERSHIP_REQUIRED')
+    expect(host.messages.filter(message => message.type === 'connect.incoming')).toHaveLength(0)
+  })
+  it('enforces the registration policy and invite code', async () => {
+    await app.close(); await start(password, [], { allowRegistration: false })
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    expect((await request('/auth/registration', 'GET')).data).toEqual({ enabled: false, requiresCode: false })
+    expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password' })).status).toBe(403)
+    await app.close(); await start(password, [], { registrationCode: 'let-me-in' })
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    expect((await request('/auth/registration', 'GET')).data).toEqual({ enabled: true, requiresCode: true })
+    expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password' })).status).toBe(403)
+    expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password', code: 'nope' })).status).toBe(403)
+    expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'short', code: 'let-me-in' })).status).toBe(400)
+    expect((await request('/auth/register', 'POST', { email: 'not-an-email', password: 'new-test-password', code: 'let-me-in' })).status).toBe(400)
+    expect((await request('/auth/register', 'POST', { email: 'new@example.com', password: 'new-test-password', code: 'let-me-in' })).status).toBe(200)
+  })
+  it('migrates a single-account state file without losing devices or tokens', async () => {
+    const d = await device()
+    await app.close()
+    // Rewrite the stored state in the version 1 shape the previous release wrote.
+    const current = JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as Record<string, any>
+    const legacy = {
+      version: 1,
+      account,
+      salt: current.accounts[account].salt,
+      verifier: current.accounts[account].verifier,
+      devices: Object.fromEntries(Object.entries(current.devices).map(([id, saved]: [string, any]) => [id, { descriptor: saved.descriptor, revoked: saved.revoked, lastSeenAt: saved.lastSeenAt }])),
+      tokens: Object.fromEntries(Object.entries(current.tokens).map(([key, token]: [string, any]) => [key, { kind: token.kind, deviceId: token.deviceId, expires: token.expires, used: token.used }])),
+    }
+    writeFileSync(join(dir, 'state.json'), JSON.stringify(legacy))
+    await start()
+    accountToken = (await request('/auth/login', 'POST', { email: account, password })).data.token
+    expect((await request('/devices', 'GET', undefined, d.accessToken)).status).toBe(200)
+    expect((await request('/account/devices', 'GET', undefined, accountToken)).data.items.map((item: { deviceId: string }) => item.deviceId)).toEqual([d.deviceId])
+    expect((JSON.parse(readFileSync(join(dir, 'state.json'), 'utf8')) as { version: number }).version).toBe(2)
   })
 })

@@ -4,6 +4,7 @@ export interface Device {
   clientVersion: string; harnessVersion?: string; online: boolean; lastSeenAt?: number;
 }
 export interface DeviceList { items: Device[]; serverUrl: string; transport: string }
+export interface RegistrationInfo { enabled: boolean; requiresCode: boolean }
 export class RequestError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
 }
@@ -19,7 +20,17 @@ export async function api<T>(path: string, body?: unknown): Promise<T> {
   } catch { throw new RequestError('连接失败，请重试。', 0) }
   const data = await response.json()
   if (!response.ok) {
-    const messages: Record<string, string> = { AUTH_INVALID: '账号或密码错误，请重试。', ACCOUNT_AUTH_REQUIRED: '登录已过期，请重新登录。', RATE_LIMITED: '请求频繁，请稍后重试。' }
+    const messages: Record<string, string> = {
+      AUTH_INVALID: '账号或密码错误，请重试。',
+      ACCOUNT_AUTH_REQUIRED: '登录已过期，请重新登录。',
+      RATE_LIMITED: '请求频繁，请稍后重试。',
+      ACCOUNT_EXISTS: '该账号已注册，请直接登录。',
+      REGISTRATION_CLOSED: '本服务器已关闭注册。',
+      REGISTRATION_CODE_INVALID: '邀请码不正确。',
+      WEAK_PASSWORD: '密码至少 12 位。',
+      INVALID_ACCOUNT: '请输入有效的邮箱地址。',
+      ACCOUNT_LIMIT_REACHED: '本服务器账号数量已达上限。',
+    }
     throw new RequestError(messages[data.error?.code] ?? '请求失败，请稍后重试。', response.status)
   }
   return data as T

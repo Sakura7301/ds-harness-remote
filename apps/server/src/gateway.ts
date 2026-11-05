@@ -395,7 +395,10 @@ export class Gateway {
       if (peer.role !== 'client') throw new ApiError('MEMBERSHIP_REQUIRED')
       const host = this.peers.get(request.hostDeviceId)
       if (!host || host.role !== 'host') { this.send(peer, createControlFrame('error', { code: 'HOST_OFFLINE', message: 'Host is offline.', retryable: true })); return }
-      this.store.get(host.id)
+      // Accounts are isolation boundaries: a client may only reach hosts that
+      // registered under the same account, and a cross-account request fails closed.
+      const clientDevice = this.store.get(peer.id)
+      if (this.store.get(host.id).account !== clientDevice.account) throw new ApiError('MEMBERSHIP_REQUIRED')
       if (!request.preferredTransports.includes('relay') || !peer.capabilities.includes('transport.relay') || !host.capabilities.includes('transport.relay')) throw new ApiError('CAPABILITY_NOT_SUPPORTED')
       for (const old of this.links.values()) if (old.client === peer.id || (old.host === host.id && !modernHost(host.version))) this.drop(old, 'CONNECTION_REPLACED')
       if (this.links.size >= 256) throw new ApiError('RATE_LIMITED')
@@ -413,7 +416,7 @@ export class Gateway {
       this.send(host, createControlFrame('connect.incoming', {
         connectionId: link.id,
         clientDeviceId: peer.id,
-        clientIdentityKey: this.store.get(peer.id).descriptor.identityKey,
+        clientIdentityKey: clientDevice.descriptor.identityKey,
         authorization: 'account',
         preferredTransports: link.preferredTransports,
       }))

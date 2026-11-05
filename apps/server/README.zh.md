@@ -2,7 +2,7 @@
 
 [English](README.md) · **中文**
 
-单账号 Remote Server，支持 WebRTC（LAN / P2P / TURN）与端到端加密 Relay，环境变量配置账号密码，Web 提供首页、登录和设备状态页。Server 不包含在 Host 插件 bundle 中，需要单独部署。
+多账号 Remote Server，支持 WebRTC（LAN / P2P / TURN）与端到端加密 Relay。环境变量提供一个引导账号（启动时创建或重新设密），默认还允许访客在登录页自助注册；Web 提供首页、登录/注册和设备状态页。各账号的设备与连接互相隔离，Server 不包含在 Host 插件 bundle 中，需要单独部署。
 
 当前版本定位为继续维护的最小自部署 Server。完整 Server Web 的产品形态仍在调整，暂不承诺在本仓库开源当前或未来的完整站点。
 
@@ -63,12 +63,15 @@ cd apps/server
 node --env-file=.env dist/main.js
 ```
 
-打开 <http://localhost:8080>。Host 和客户端填写同一 Server 地址，使用同一账号密码登录。建议账号使用邮箱格式，以兼容现有客户端。
+打开 <http://localhost:8080>。Host 和客户端填写同一 Server 地址，并使用**同一账号**登录：只有同一账号下的 Host 与客户端才能互相连接，跨账号请求会被拒绝。建议账号使用邮箱格式，以兼容现有客户端。
 
 | 环境变量 | 用途 / 默认值 |
 | --- | --- |
 | `DSH_SERVER_ACCOUNT` | 必填，登录账号 |
-| `DSH_SERVER_PASSWORD` | 必填，至少 12 字符 |
+| `DSH_SERVER_PASSWORD` | 必填，至少 12 字符；该账号每次启动都会按此密码校验，改密码会使其设备凭据失效 |
+| `DSH_SERVER_ALLOW_REGISTRATION` | 是否允许自助注册，默认 `true`；设为 `false` 后只接受已有账号登录 |
+| `DSH_SERVER_REGISTRATION_CODE` | 可选邀请码；非空时注册必须携带 |
+| `DSH_SERVER_MAX_ACCOUNTS` | 账号数量上限，1–10000，默认 `256` |
 | `DSH_SERVER_PUBLIC_URL` | 浏览器访问地址，默认 `http://localhost:8080` |
 | `DSH_SERVER_HOST` | 监听/端口映射地址，默认 `127.0.0.1`；局域网设为 `0.0.0.0` |
 | `DSH_SERVER_PORT` | 默认 `8080` |
