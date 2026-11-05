@@ -346,8 +346,6 @@ export function createRemoteServer(config: Config) {
     }
   }
   const assets = readAssets()
-  /** Account sessions: cookie value digest → owning account and expiry. */
-  const sessions = new Map<string, { account: string; expires: number }>()
   const limits = new Map<string, { count: number; until: number }>()
   function rate(key: string, max: number) {
     for (const [k, v] of limits) if (v.until < Date.now()) limits.delete(k)
@@ -363,17 +361,13 @@ export function createRemoteServer(config: Config) {
   /** Resolve the signed-in account, or fail closed. */
   function accountAuth(req: IncomingMessage): string {
     const key = hash(token(req))
-    const session = sessions.get(key)
-    if (session === undefined || session.expires <= Date.now()) { sessions.delete(key); throw new ApiError('ACCOUNT_AUTH_REQUIRED', 401) }
+    const session = store.findSession(key)
+    if (session === null) throw new ApiError('ACCOUNT_AUTH_REQUIRED', 401)
     return session.account
   }
-  /** Open a session for one account and issue the cookie value. */
+  /** Open a persisted session for one account and issue the cookie value. */
   function startSession(account: string): { value: string; expiresAt: number } {
-    for (const [key, session] of sessions) if (session.expires <= Date.now()) sessions.delete(key)
-    if (sessions.size >= 1024) throw new ApiError('RATE_LIMITED', 429)
-    const value = secret(), expiresAt = Date.now() + 8 * 3600_000
-    sessions.set(hash(value), { account, expires: expiresAt })
-    return { value, expiresAt }
+    return store.createSession(account)
   }
   function deviceAuth(req: IncomingMessage) {
     if (!req.headers.authorization?.startsWith('Bearer ')) throw new ApiError('AUTH_REQUIRED', 401)
@@ -484,7 +478,7 @@ export function createRemoteServer(config: Config) {
         if (account === null) throw new ApiError('AUTH_INVALID', 401)
       }
       const session = startSession(account)
-      res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
+      res.setHeader('Set-Cookie', cookie(session.value, 30 * 86400))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return
     }
     if (method === 'POST' && path === '/api/v1/auth/register/code') {
@@ -510,12 +504,12 @@ export function createRemoteServer(config: Config) {
       if (verifiedEmail && !checkEmailCode(`register:${email}`, request.code ?? '')) throw new ApiError('CODE_INVALID', 400)
       const account = store.createAccount(email, request.password, { nickname: request.nickname, verifiedEmail })
       const session = startSession(account)
-      res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
+      res.setHeader('Set-Cookie', cookie(session.value, 30 * 86400))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return
     }
     if (method === 'GET' && path === '/api/v1/auth/me') { json(res, 200, profile(accountAuth(req))); return }
     if (method === 'POST' && path === '/api/v1/auth/logout') {
-      sessions.delete(hash(token(req))); res.setHeader('Set-Cookie', cookie('', 0)); json(res, 200, { status: 'ok' }); return
+      store.deleteSession(hash(token(req))); res.setHeader('Set-Cookie', cookie('', 0)); json(res, 200, { status: 'ok' }); return
     }
     if (method === 'GET' && path === '/api/v1/account/devices') {
       const account = accountAuth(req)
@@ -639,7 +633,7 @@ export function createRemoteServer(config: Config) {
       if (!checkEmailCode(`bind:${account}`, request.code)) throw new ApiError('CODE_INVALID', 400)
       const next = store.changeEmail(account, email)
       // The address is the sign-in key, so live cookies follow the move.
-      for (const session of sessions.values()) if (session.account === account) session.account = next
+      store.moveSessions(account, next)
       json(res, 200, profile(next)); return
     }
     if (path.startsWith('/api/v1/admin/')) {

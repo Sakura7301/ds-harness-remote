@@ -107,6 +107,7 @@ export function LoginPanel({ onAuthSuccess, initialError }: { onAuthSuccess: (ac
         {error && <Alert className="selfhost-auth-error" type="error" showIcon message={error} />}
         {codeNotice && <Alert className="selfhost-auth-error" type="success" showIcon message={codeNotice} />}
         {registering && !emailEnabled && <Alert className="selfhost-auth-error" type="info" showIcon message="管理员尚未配置邮件服务器，注册暂不需要邮箱验证码。" />}
+        {!registering && emailCodeLogin === 'required' && <Alert className="selfhost-auth-error" type="info" showIcon message="本服务器要求验证邮箱后才能登录，验证码会发送到你的注册邮箱。" />}
         <Form form={form} layout="vertical" onFinish={submit} requiredMark={false} className="auth-form">
           {registering && <Form.Item name="nickname" label="昵称（可选）" rules={[{ max: 64, message: '昵称不能超过 64 个字符' }]}><Input size="large" placeholder="显示用的名字，留空则用邮箱前缀" autoComplete="nickname" /></Form.Item>}
           <Form.Item name="email" label="邮箱" rules={EMAIL_RULES}><Input size="large" placeholder="you@example.com" autoComplete={registering ? 'email' : 'username'} /></Form.Item>

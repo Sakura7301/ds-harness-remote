@@ -68,12 +68,15 @@ const siteSchema = z.object({
 const settingsSchema = z.object({ smtp: smtpSchema.optional(), site: siteSchema.optional() })
 const tokenSchema = z.object({ kind: z.enum(['access', 'refresh']), deviceId: z.string(), account: z.string(), expires: z.number(), used: z.boolean() })
 const savedDeviceSchema = z.object({ descriptor: accountDeviceDescriptorSchema, revoked: z.boolean(), lastSeenAt: z.number(), account: z.string() })
+/** Browser sessions live in the state file, so a restart keeps users signed in. */
+const sessionSchema = z.object({ account: z.string(), expires: z.number() })
 /** Current on-disk format: many accounts, each owning its own devices and tokens. */
 const stateSchema = z.object({
   version: z.literal(2),
   accounts: z.record(z.string(), accountRecordSchema),
   devices: z.record(z.string(), savedDeviceSchema),
   tokens: z.record(z.string(), tokenSchema),
+  sessions: z.record(z.string(), sessionSchema).optional(),
   settings: settingsSchema.optional(),
 })
 
@@ -308,6 +311,35 @@ export class Store {
     return Object.keys(this.state.accounts)
       .map(account => this.descriptorOf(account))
       .sort((a, b) => a.createdAt - b.createdAt)
+  }
+  /** Remember a signed-in browser for a month; the cookie is HttpOnly anyway. */
+  createSession(account: string, ttl = 30 * 86400_000): { value: string; expiresAt: number } {
+    const now = Date.now()
+    this.state.sessions = this.state.sessions ?? {}
+    for (const [key, session] of Object.entries(this.state.sessions)) if (session.expires <= now) delete this.state.sessions[key]
+    if (Object.keys(this.state.sessions).length >= 4096) throw new ApiError('RATE_LIMITED', 429)
+    const value = secret()
+    const expiresAt = now + ttl
+    this.state.sessions[hash(value)] = { account, expires: expiresAt }
+    this.save()
+    return { value, expiresAt }
+  }
+  findSession(key: string): { account: string; expires: number } | null {
+    const session = this.state.sessions?.[key]
+    if (session === undefined) return null
+    if (session.expires <= Date.now()) { this.deleteSession(key); return null }
+    return session
+  }
+  deleteSession(key: string): void {
+    if (this.state.sessions === undefined || !Object.hasOwn(this.state.sessions, key)) return
+    delete this.state.sessions[key]
+    this.save()
+  }
+  /** Email rebinding moves the account key; live cookies follow it. */
+  moveSessions(from: string, to: string): void {
+    let changed = false
+    for (const session of Object.values(this.state.sessions ?? {})) if (session.account === from) { session.account = to; changed = true }
+    if (changed) this.save()
   }
   setPassword(account: string, password: string): void {
     if (password.length < PASSWORD_MIN_LENGTH) throw new ApiError('WEAK_PASSWORD')

@@ -1177,6 +1177,26 @@ describe('administrator console, usernames and email codes', () => {
     expect((await request('/auth/password/forgot', 'POST', { email: 'nobody@example.com' })).status).toBe(200)
     expect(sent.length).toBe(before)
   })
+  it('keeps browser sessions across a server restart', async () => {
+    await app.close()
+    await start(password)
+    const login = await request('/auth/login', 'POST', { email: account, password })
+    expect(login.status).toBe(200)
+    const token = login.data.token
+    expect((await request('/auth/me', 'GET', undefined, token)).status).toBe(200)
+    // A restart reloads the state file; the remembered session must survive it.
+    await app.close()
+    await start(password)
+    const me = await request('/auth/me', 'GET', undefined, token)
+    expect(me.status).toBe(200)
+    expect(me.data.account).toBe(account.toLowerCase())
+    // Logging out removes the persisted session for good.
+    expect((await request('/auth/logout', 'POST', {}, token)).status).toBe(200)
+    expect((await request('/auth/me', 'GET', undefined, token)).status).toBe(401)
+    await app.close()
+    await start(password)
+    expect((await request('/auth/me', 'GET', undefined, token)).status).toBe(401)
+  })
   it('renames the profile, changes the password by code and deletes a device by code', async () => {
     const sent = await startWithMailer()
     expect((await request('/admin/smtp', 'PUT', { enabled: true, host: 'smtp.test', port: 587, from: 'relay@test.example' }, accountToken)).status).toBe(200)
