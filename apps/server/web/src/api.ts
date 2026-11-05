@@ -1,5 +1,6 @@
 export interface Account {
   account: string
+  nickname?: string
   role?: 'admin' | 'user'
   isAdmin?: boolean
   email?: string
@@ -46,6 +47,7 @@ export interface AdminOverview {
 }
 export interface AdminAccount {
   account: string
+  nickname: string
   role: 'admin' | 'user'
   email?: string
   emailVerified: boolean
@@ -93,6 +95,8 @@ const MESSAGES: Record<string, string> = {
   ADMIN_REQUIRED: '需要管理员权限。',
   SELF_FORBIDDEN: '不能对当前登录的账号执行该操作。',
   ACCOUNT_NOT_FOUND: '账号不存在。',
+  EMAIL_NOT_BOUND: '请先绑定邮箱。',
+  INVALID_NICKNAME: '昵称不能为空。',
 }
 export async function api<T>(path: string, body?: unknown, method?: 'GET' | 'POST' | 'PUT' | 'DELETE'): Promise<T> {
   let response: Response

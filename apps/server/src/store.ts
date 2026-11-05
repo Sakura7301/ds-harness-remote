@@ -47,6 +47,8 @@ const accountRecordSchema = z.object({
   email: z.string().optional(),
   emailVerified: z.boolean().optional(),
   disabled: z.boolean().optional(),
+  /** Display name; the account key stays the email address. */
+  nickname: z.string().optional(),
 })
 const smtpSchema = z.object({
   enabled: z.boolean().optional(),
@@ -94,6 +96,7 @@ export type SmtpSettings = z.infer<typeof smtpSchema>
 export type SiteSettings = z.infer<typeof siteSchema>
 export interface AccountDescriptor {
   account: string
+  nickname: string
   role: 'admin' | 'user'
   email?: string
   emailVerified: boolean
@@ -118,11 +121,32 @@ export class Store {
     bootstrapAccount = '',
     bootstrapPassword = '',
     private readonly maxAccounts = 256,
+    bootstrapNickname = '',
   ) {
     this.state = this.load()
+    const normalize = this.normalizeIdentities(this.state)
+    if (normalize) this.save()
     const bootstrap = accountKey(bootstrapAccount)
-    if (bootstrap !== '' && bootstrapPassword !== '') this.ensureBootstrapAccount(bootstrap, bootstrapPassword)
+    if (bootstrap !== '' && bootstrapPassword !== '') this.ensureBootstrapAccount(bootstrap, bootstrapPassword, bootstrapNickname)
     this.save()
+  }
+  /**
+   * Accounts are keyed by email. Older records were keyed by a chosen username;
+   * move any that carry a bound address to that address so sign-in stays unified.
+   */
+  private normalizeIdentities(state: State): boolean {
+    let changed = false
+    for (const [key, record] of Object.entries(state.accounts)) {
+      if (validEmail(key)) continue
+      const email = (record.email ?? '').trim().toLowerCase()
+      if (!validEmail(email) || Object.hasOwn(state.accounts, email)) continue
+      state.accounts[email] = { ...record, email, emailVerified: true }
+      delete state.accounts[key]
+      for (const device of Object.values(state.devices)) if (device.account === key) device.account = email
+      for (const token of Object.values(state.tokens)) if (token.account === key) token.account = email
+      changed = true
+    }
+    return changed
   }
   private load(): State {
     if (!existsSync(this.file)) return { version: 2, accounts: {}, devices: {}, tokens: {} }
@@ -152,14 +176,15 @@ export class Store {
   private createSalt(): string { return secret() }
   private verifyPassword(password: string, salt: string): string { return scryptSync(password, salt, 32).toString('hex') }
   /** The environment identity stays authoritative: a changed env password re-keys it. */
-  private ensureBootstrapAccount(account: string, password: string): void {
+  private ensureBootstrapAccount(account: string, password: string, nickname: string): void {
     const existing = this.state.accounts[account]
+    if (existing !== undefined && nickname.trim() !== '') existing.nickname = nickname.slice(0, ACCOUNT_NAME_MAX_LENGTH)
     if (existing === undefined) {
       // The bootstrap account keeps its historical, looser contract: any non-empty
       // name is accepted so an existing deployment never fails to start.
       if (password.length < PASSWORD_MIN_LENGTH) throw new Error(`DSH_SERVER_PASSWORD must be at least ${PASSWORD_MIN_LENGTH} characters.`)
       const salt = this.createSalt()
-      this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now(), role: 'admin' }
+      this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now(), role: 'admin', ...(nickname.trim() === '' ? {} : { nickname: nickname.slice(0, ACCOUNT_NAME_MAX_LENGTH) }) }
       return
     }
     // The environment account is the administrator, even for a pre-existing record.
@@ -194,16 +219,58 @@ export class Store {
    * Register a new account. Callers decide policy (open registration, invite
    * code); the store enforces the identity and password contract.
    */
-  createAccount(username: string, password: string): string {
-    const account = accountKey(username)
-    if (!validUsername(account) && !validEmail(account)) throw new ApiError('INVALID_ACCOUNT')
+  /**
+   * Register a new account. The address is the identity; the nickname is only a
+   * display name. Callers decide policy (open registration, invite code).
+   */
+  createAccount(email: string, password: string, options: { nickname?: string; verifiedEmail?: boolean } = {}): string {
+    const account = accountKey(email)
+    if (!validEmail(account)) throw new ApiError('INVALID_EMAIL')
     if (password.length < PASSWORD_MIN_LENGTH) throw new ApiError('WEAK_PASSWORD')
     if (Object.hasOwn(this.state.accounts, account)) throw new ApiError('ACCOUNT_EXISTS', 409)
     if (this.accountCount() >= this.maxAccounts) throw new ApiError('ACCOUNT_LIMIT_REACHED', 429)
     const salt = this.createSalt()
-    this.state.accounts[account] = { salt, verifier: this.verifyPassword(password, salt), createdAt: Date.now(), role: 'user' }
+    const nickname = (options.nickname ?? '').trim().slice(0, ACCOUNT_NAME_MAX_LENGTH)
+    this.state.accounts[account] = {
+      salt,
+      verifier: this.verifyPassword(password, salt),
+      createdAt: Date.now(),
+      role: 'user',
+      email: account,
+      emailVerified: options.verifiedEmail === true,
+      ...(nickname === '' ? {} : { nickname }),
+    }
     this.save()
     return account
+  }
+  setNickname(account: string, nickname: string): void {
+    const record = this.assertExists(account)
+    const trimmed = nickname.trim().slice(0, ACCOUNT_NAME_MAX_LENGTH)
+    if (trimmed === '') throw new ApiError('INVALID_NICKNAME')
+    record.nickname = trimmed
+    this.save()
+  }
+  /**
+   * Replace the account's address. Because the address is the sign-in key, the
+   * record and everything it owns move to the new key.
+   */
+  changeEmail(account: string, email: string): string {
+    const next = email.trim().toLowerCase()
+    if (!validEmail(next)) throw new ApiError('INVALID_EMAIL')
+    if (next !== account && Object.hasOwn(this.state.accounts, next)) throw new ApiError('EMAIL_IN_USE', 409)
+    const record = this.assertExists(account)
+    if (next === account) {
+      record.email = next
+      record.emailVerified = true
+      this.save()
+      return next
+    }
+    this.state.accounts[next] = { ...record, email: next, emailVerified: true }
+    delete this.state.accounts[account]
+    for (const device of Object.values(this.state.devices)) if (device.account === account) device.account = next
+    for (const token of Object.values(this.state.tokens)) if (token.account === account) token.account = next
+    this.save()
+    return next
   }
   /** Constant-ish time: an unknown account still pays one scrypt derivation. */
   verify(identifier: string, password: string): string | null {
@@ -228,6 +295,7 @@ export class Store {
     const record = this.assertExists(account)
     return {
       account,
+      nickname: record.nickname ?? account.split('@')[0] ?? account,
       role: record.role === 'admin' ? 'admin' : 'user',
       ...(record.email === undefined ? {} : { email: record.email }),
       emailVerified: record.emailVerified === true,
@@ -251,7 +319,14 @@ export class Store {
     this.save()
   }
   /** Bind an email that the caller has already proven ownership of. */
-  bindEmail(account: string, email: string): void {
+  bindEmail(account: string, email: string): string {
+    return this.changeEmail(account, email)
+  }
+  /**
+   * Attach an address without moving the record. Used for the environment
+   * bootstrap account, whose key may be a plain name rather than an address.
+   */
+  bindEmailAddress(account: string, email: string): void {
     const normalized = email.trim().toLowerCase()
     if (!validEmail(normalized)) throw new ApiError('INVALID_EMAIL')
     const existing = this.accountByEmail(normalized)
@@ -345,6 +420,15 @@ export class Store {
     this.save()
   }
   revoke(id: string): void { this.get(id).revoked = true; this.invalidate(id) }
+  /** Delete a device record outright, so reinstalling can register the same id again. */
+  remove(id: string, account: string): void {
+    const device = this.get(id)
+    if (device.account !== accountKey(account)) throw new ApiError('DEVICE_NOT_FOUND', 404)
+    delete this.state.devices[id]
+    for (const [key, value] of Object.entries(this.state.tokens)) if (value.deviceId === id) delete this.state.tokens[key]
+    this.save()
+    this.onInvalidate(id)
+  }
   rename(id: string, name: string): void {
     this.get(id).descriptor.name = name
     this.save()

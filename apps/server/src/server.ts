@@ -44,6 +44,8 @@ export interface Config {
   emailLogin?: 'off' | 'optional' | 'required'
   /** Address bound to the bootstrap administrator on start. */
   accountEmail?: string
+  /** Display name for the bootstrap administrator. */
+  accountNickname?: string
   trustedProxyIps?: readonly string[]
   helloTimeoutMs?: number
   heartbeatIntervalMs?: number
@@ -95,20 +97,29 @@ const loginSchema = z.object({
 }).strict()
 const loginCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const registerSchema = z.object({
-  username: z.string().min(1).max(64).optional(),
-  /** Registration mailbox; required (and verified) once SMTP is configured. */
-  email: z.string().max(254).optional(),
-  /** Email verification code. */
+  /** The address is the account identity; it is always required. */
+  email: z.string().min(1).max(254),
+  /** Display name shown in the UI; falls back to the address local part. */
+  nickname: z.string().max(64).optional(),
+  /** Email verification code, required once SMTP is configured. */
   code: z.string().max(16).optional(),
   inviteCode: z.string().max(256).optional(),
   password: z.string().min(1).max(1024),
 }).strict()
+const profileSchema = z.object({ nickname: z.string().min(1).max(64) }).strict()
+const passwordChangeSchema = z.object({
+  /** Mailed code path: proves control of the bound address. */
+  code: z.string().min(1).max(16).optional(),
+  /** Fallback when the deployment has no mail server. */
+  currentPassword: z.string().max(1024).optional(),
+  password: z.string().min(1).max(1024),
+}).strict()
+const deviceDeleteSchema = z.object({ code: z.string().min(1).max(16) }).strict()
 const registerCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const forgotSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const resetSchema = z.object({ email: z.string().min(1).max(254), code: z.string().min(1).max(16), password: z.string().min(1).max(1024) }).strict()
 const emailCodeSchema = z.object({ email: z.string().min(1).max(254) }).strict()
 const bindEmailSchema = z.object({ email: z.string().min(1).max(254), code: z.string().min(1).max(16) }).strict()
-const changePasswordSchema = z.object({ currentPassword: z.string().min(1).max(1024), password: z.string().min(1).max(1024) }).strict()
 const smtpSchema = z.object({
   enabled: z.boolean().optional(),
   host: z.string().max(255).optional(),
@@ -212,7 +223,7 @@ export function createRemoteServer(config: Config) {
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash) throw new Error('DSH_SERVER_PUBLIC_URL must be an HTTP(S) origin.')
   const trustedProxyIps = normalizeTrustedProxyIps(config.trustedProxyIps)
   const ice = config.ice ?? parseIceConfig({})
-  const store = new Store(config.dataFile, config.account.trim(), config.password, config.maxAccounts ?? 256)
+  const store = new Store(config.dataFile, config.account.trim(), config.password, config.maxAccounts ?? 256, config.accountNickname ?? '')
   const allowRegistration = config.allowRegistration !== false
   const emailLogin = config.emailLogin === 'off' || config.emailLogin === 'required' ? config.emailLogin : 'optional'
   const bootstrapEmail = config.accountEmail?.trim().toLowerCase() ?? ''
@@ -220,7 +231,7 @@ export function createRemoteServer(config: Config) {
     const bootstrap = accountKey(config.account)
     try {
       const current = store.descriptorOf(bootstrap)
-      if (current.email !== bootstrapEmail) store.bindEmail(bootstrap, bootstrapEmail)
+      if (current.email !== bootstrapEmail) store.bindEmailAddress(bootstrap, bootstrapEmail)
     } catch { /* the address already belongs to another account */ }
   }
   const registrationCode = config.registrationCode?.trim() ?? ''
@@ -373,7 +384,8 @@ export function createRemoteServer(config: Config) {
     const descriptor = store.descriptorOf(account)
     return {
       account,
-      profile: { displayName: account },
+      nickname: descriptor.nickname,
+      profile: { displayName: descriptor.nickname },
       isAdmin: descriptor.role === 'admin',
       role: descriptor.role,
       ...(descriptor.email === undefined ? {} : { email: descriptor.email }),
@@ -492,22 +504,11 @@ export function createRemoteServer(config: Config) {
       const request = registerSchema.parse(await body(req))
       if (registrationCode !== '' && !equal(request.inviteCode?.trim() ?? '', registrationCode)) throw new ApiError('REGISTRATION_CODE_INVALID', 403)
       const smtp = effectiveSmtp()
-      const emailRequired = smtpConfigured(smtp)
-      // Older clients send the account name in `email`. That legacy shape never
-      // carried a mailbox, so it is read as a username and not format-checked.
-      const legacyNameOnly = request.username === undefined && !emailRequired
-      const username = (request.username ?? (legacyNameOnly ? (request.email ?? '') : '')).trim()
-      if (username === '') throw new ApiError('INVALID_ACCOUNT')
-      const email = legacyNameOnly ? '' : (request.email?.trim().toLowerCase() ?? '')
-      if (emailRequired) {
-        if (!validEmail(email)) throw new ApiError('INVALID_EMAIL', 400)
-        if (store.accountByEmail(email) !== null) throw new ApiError('EMAIL_IN_USE', 409)
-        if (!checkEmailCode(`register:${email}`, request.code ?? '')) throw new ApiError('CODE_INVALID', 400)
-      } else if (email !== '' && !validEmail(email)) {
-        throw new ApiError('INVALID_EMAIL', 400)
-      }
-      const account = store.createAccount(username, request.password)
-      if (emailRequired) store.bindEmail(account, email)
+      const verifiedEmail = smtpConfigured(smtp)
+      const email = request.email.trim().toLowerCase()
+      if (!validEmail(email)) throw new ApiError('INVALID_EMAIL', 400)
+      if (verifiedEmail && !checkEmailCode(`register:${email}`, request.code ?? '')) throw new ApiError('CODE_INVALID', 400)
+      const account = store.createAccount(email, request.password, { nickname: request.nickname, verifiedEmail })
       const session = startSession(account)
       res.setHeader('Set-Cookie', cookie(session.value, 8 * 3600))
       json(res, 200, { ...profile(account), token: session.value, expiresAt: session.expiresAt }); return
@@ -570,13 +571,56 @@ export function createRemoteServer(config: Config) {
       store.setPassword(account, request.password)
       json(res, 200, { status: 'ok' }); return
     }
+    if (method === 'POST' && path === '/api/v1/auth/password/code') {
+      const account = accountAuth(req)
+      rate(`password-code:${client}`, 5)
+      const descriptor = store.descriptorOf(account)
+      if (descriptor.email === undefined) throw new ApiError('EMAIL_NOT_BOUND', 400)
+      const code = issueEmailCode(`password-change:${account}`)
+      await sendCodeMail(descriptor.email, code, '修改密码验证码')
+      json(res, 200, { status: 'ok' }); return
+    }
     if (method === 'POST' && path === '/api/v1/auth/password') {
       const account = accountAuth(req)
       rate(`password:${client}`, 10)
-      const request = changePasswordSchema.parse(await body(req))
-      if (store.verify(account, request.currentPassword) === null) throw new ApiError('AUTH_INVALID', 401)
+      const request = passwordChangeSchema.parse(await body(req))
+      if (request.code !== undefined) {
+        if (!checkEmailCode(`password-change:${account}`, request.code)) throw new ApiError('CODE_INVALID', 400)
+      } else {
+        if (request.currentPassword === undefined || store.verify(account, request.currentPassword) === null) throw new ApiError('AUTH_INVALID', 401)
+      }
       store.setPassword(account, request.password)
       json(res, 200, { status: 'ok' }); return
+    }
+    if (method === 'POST' && path === '/api/v1/auth/profile') {
+      const account = accountAuth(req)
+      const request = profileSchema.parse(await body(req))
+      store.setNickname(account, request.nickname)
+      json(res, 200, profile(account)); return
+    }
+    const deleteCodeMatch = /^\/api\/v1\/account\/devices\/([^/]+)\/delete\/code$/.exec(path)
+    if (method === 'POST' && deleteCodeMatch) {
+      const account = accountAuth(req)
+      rate(`device-delete-code:${client}`, 5)
+      const deviceId = decodeURIComponent(deleteCodeMatch[1]!)
+      store.get(deviceId)
+      const device = store.list(account).find(entry => entry.descriptor.deviceId === deviceId)
+      if (device === undefined) throw new ApiError('DEVICE_NOT_FOUND', 404)
+      const descriptor = store.descriptorOf(account)
+      if (descriptor.email === undefined) throw new ApiError('EMAIL_NOT_BOUND', 400)
+      const code = issueEmailCode(`device-delete:${account}`)
+      await sendCodeMail(descriptor.email, code, '删除设备验证码')
+      json(res, 200, { status: 'ok' }); return
+    }
+    const deleteMatch = /^\/api\/v1\/account\/devices\/([^/]+)$/.exec(path)
+    if (method === 'DELETE' && deleteMatch) {
+      const account = accountAuth(req)
+      rate(`device-delete:${client}`, 10)
+      const deviceId = decodeURIComponent(deleteMatch[1]!)
+      const { code } = deviceDeleteSchema.parse(await body(req))
+      if (!checkEmailCode(`device-delete:${account}`, code)) throw new ApiError('CODE_INVALID', 400)
+      store.remove(deviceId, account)
+      json(res, 200, { status: 'deleted' }); return
     }
     if (method === 'POST' && path === '/api/v1/auth/email/code') {
       const account = accountAuth(req)
@@ -593,8 +637,10 @@ export function createRemoteServer(config: Config) {
       const request = bindEmailSchema.parse(await body(req))
       const email = request.email.trim().toLowerCase()
       if (!checkEmailCode(`bind:${account}`, request.code)) throw new ApiError('CODE_INVALID', 400)
-      store.bindEmail(account, email)
-      json(res, 200, profile(account)); return
+      const next = store.changeEmail(account, email)
+      // The address is the sign-in key, so live cookies follow the move.
+      for (const session of sessions.values()) if (session.account === account) session.account = next
+      json(res, 200, profile(next)); return
     }
     if (path.startsWith('/api/v1/admin/')) {
       const admin = adminAuth(req)

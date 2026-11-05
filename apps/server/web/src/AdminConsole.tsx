@@ -135,8 +135,8 @@ export function AdminConsole({ account, onBack, onSignedOut }: { account: Accoun
     onSignedOut()
   }
   const columns: TableColumnsType<AdminAccount> = [
-    { title: '账号', dataIndex: 'account', key: 'account', render: (name: string, row) => <Space size={8}><Text strong>{name}</Text>{row.role === 'admin' && <Tag color="blue">管理员</Tag>}{row.disabled && <Tag color="red">已停用</Tag>}</Space> },
-    { title: '邮箱', dataIndex: 'email', key: 'email', render: (email?: string) => email || '—' },
+    { title: '昵称', dataIndex: 'nickname', key: 'nickname', render: (nickname: string, row) => <Space size={8}><Text strong>{nickname}</Text>{row.role === 'admin' && <Tag color="blue">管理员</Tag>}{row.disabled && <Tag color="red">已停用</Tag>}</Space> },
+    { title: '邮箱', dataIndex: 'account', key: 'account' },
     { title: '设备', dataIndex: 'devices', key: 'devices' },
     { title: '创建时间', dataIndex: 'createdAt', key: 'createdAt', render: (value: number) => new Date(value).toLocaleString('zh-CN') },
     {
