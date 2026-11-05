@@ -172,7 +172,7 @@ export function AdminConsole({ account, onBack, onSignedOut }: { account: Accoun
         <div className="admin-stat-note">在线 / 已注册</div>
       </Card>
       <Card className="admin-stat-card">
-        <div className="admin-stat-label">账号</div>
+        <div className="admin-stat-label">普通用户</div>
         <div className="admin-stat-value">{o.accounts.users}</div>
         <div className="admin-stat-note">{o.accounts.admins} 位管理员 · 共 {o.accounts.total} 个账号</div>
       </Card>
