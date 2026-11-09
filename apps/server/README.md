@@ -73,7 +73,7 @@ Open <http://localhost:8080>. Set the same Server URL on your Host and Client an
 | `DSH_SERVER_REGISTRATION_CODE` | Optional invite code that every registration must carry |
 | `DSH_SERVER_MAX_ACCOUNTS` | Maximum stored accounts, 1–10000, default `256` |
 | `DSH_SERVER_ACCOUNT_EMAIL` | Address bound to the administrator account on start (enables administrator code sign-in) |
-| `DSH_SERVER_EMAIL_LOGIN` | Email-code sign-in policy: `off` (password only), `optional` (both, default), `required` (code only) |
+| `DSH_SERVER_EMAIL_LOGIN` | Email-code sign-in policy: `off` (password only), `optional` (both, default), `required` (code only). Keep `optional`: the Remote plugin only signs in with a password, so `required` locks Desktop/Android/VS Code out |
 | `DSH_SERVER_SMTP_ENABLED` | Enable mail; inferred from `DSH_SERVER_SMTP_HOST` when unset |
 | `DSH_SERVER_SMTP_HOST` / `_PORT` / `_SECURE` | SMTP server, port and whether SSL/TLS applies (usually `true` for 465) |
 | `DSH_SERVER_SMTP_USER` / `_PASS` | SMTP login and the **mail provider's app password** (not a code this server issues) |

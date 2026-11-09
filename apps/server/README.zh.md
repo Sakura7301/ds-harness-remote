@@ -73,7 +73,7 @@ node --env-file=.env dist/main.js
 | `DSH_SERVER_REGISTRATION_CODE` | 可选邀请码；非空时注册必须携带 |
 | `DSH_SERVER_MAX_ACCOUNTS` | 账号数量上限，1–10000，默认 `256` |
 | `DSH_SERVER_ACCOUNT_EMAIL` | 启动时绑定到管理员账号的邮箱（管理员因此可用验证码登录） |
-| `DSH_SERVER_EMAIL_LOGIN` | 邮箱验证码登录策略：`off`（仅密码）/ `optional`（密码或验证码，默认）/ `required`（仅验证码） |
+| `DSH_SERVER_EMAIL_LOGIN` | 邮箱验证码登录策略：`off`（仅密码）/ `optional`（密码或验证码，默认）/ `required`（仅验证码）。建议保持 `optional`：Remote 插件只支持密码登录，设为 `required` 会让 Desktop/Android/VS Code 全部无法连接 |
 | `DSH_SERVER_SMTP_ENABLED` | 启用邮件服务，默认按是否配置了 `DSH_SERVER_SMTP_HOST` 推断 |
 | `DSH_SERVER_SMTP_HOST` / `_PORT` / `_SECURE` | SMTP 服务器、端口与是否使用 SSL/TLS（465 通常为 `true`） |
 | `DSH_SERVER_SMTP_USER` / `_PASS` | SMTP 登录账号与**邮箱服务商提供的授权码**（不是本站验证码） |
