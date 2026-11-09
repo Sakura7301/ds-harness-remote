@@ -405,6 +405,8 @@ export function createRemoteServer(config: Config) {
     })
   })
   const logger = new Logger('server', config.logLevel ?? 'info')
+  /** Security-relevant actions, without secrets. Written to the server log. */
+  const audit = (event: string, meta: Record<string, unknown>) => logger.info(event, meta)
   // Normalize at this boundary as well: a programmatic caller may pass NaN,
   // Infinity or a negative value straight through the Config object.
   const timing = normalizeGatewayOptions({
@@ -520,7 +522,9 @@ export function createRemoteServer(config: Config) {
       const account = source === undefined ? accountAuth(req) : source.account
       const { device } = deviceRegistrationRequestSchema.parse(await body(req))
       if (source && (source.descriptor.deviceId === device.deviceId || source.descriptor.role === device.role)) throw new ApiError('INVALID_MESSAGE', 409)
-      json(res, 200, store.register(device, account)); return
+      const issued = store.register(device, account)
+      audit('device_registered', { account, deviceId: device.deviceId, role: device.role, accountAuth: source === undefined })
+      json(res, 200, issued); return
     }
     if (method === 'POST' && path === '/api/v1/auth/refresh') {
       const data = deviceRefreshRequestSchema.parse(await body(req))
@@ -584,6 +588,7 @@ export function createRemoteServer(config: Config) {
         if (request.currentPassword === undefined || store.verify(account, request.currentPassword) === null) throw new ApiError('AUTH_INVALID', 401)
       }
       store.setPassword(account, request.password)
+      audit('account_password_changed', { account, via: request.code !== undefined ? 'email_code' : 'current_password' })
       json(res, 200, { status: 'ok' }); return
     }
     if (method === 'POST' && path === '/api/v1/auth/profile') {
@@ -614,6 +619,7 @@ export function createRemoteServer(config: Config) {
       const { code } = deviceDeleteSchema.parse(await body(req))
       if (!checkEmailCode(`device-delete:${account}`, code)) throw new ApiError('CODE_INVALID', 400)
       store.remove(deviceId, account)
+      audit('account_device_deleted', { account, deviceId })
       json(res, 200, { status: 'deleted' }); return
     }
     if (method === 'POST' && path === '/api/v1/auth/email/code') {
@@ -634,6 +640,7 @@ export function createRemoteServer(config: Config) {
       const next = store.changeEmail(account, email)
       // The address is the sign-in key, so live cookies follow the move.
       store.moveSessions(account, next)
+      audit('account_email_changed', { account: next, previous: account })
       json(res, 200, profile(next)); return
     }
     if (path.startsWith('/api/v1/admin/')) {
@@ -685,6 +692,7 @@ export function createRemoteServer(config: Config) {
         if (target === admin) throw new ApiError('SELF_FORBIDDEN', 409)
         const { disabled } = accountFlagSchema.parse(await body(req))
         store.setDisabled(target, disabled)
+        audit('admin_account_disabled_changed', { admin, account: target, disabled })
         json(res, 200, store.descriptorOf(target)); return
       }
       const accountMatch = /^\/api\/v1\/admin\/accounts\/([^/]+)$/.exec(path)
@@ -692,6 +700,7 @@ export function createRemoteServer(config: Config) {
         const target = accountKey(decodeURIComponent(accountMatch[1]!))
         if (target === admin) throw new ApiError('SELF_FORBIDDEN', 409)
         store.deleteAccount(target)
+        audit('admin_account_deleted', { admin, account: target })
         json(res, 200, { status: 'deleted' }); return
       }
       if (path === '/api/v1/admin/smtp') {
@@ -705,6 +714,7 @@ export function createRemoteServer(config: Config) {
           const patch = smtpSchema.parse(await body(req)) as SmtpSettings
           if (patch.pass === '********') delete patch.pass
           const saved = store.setSmtp(patch)
+          audit('admin_smtp_updated', { admin, host: saved.host ?? '', enabled: saved.enabled === true })
           json(res, 200, { ...saved, pass: saved.pass ? '********' : '', source: smtpSource() }); return
         }
       }
@@ -721,7 +731,9 @@ export function createRemoteServer(config: Config) {
         if (method === 'GET') { json(res, 200, { ...siteInfo(), site: store.site() }); return }
         if (method === 'PUT' || method === 'POST') {
           const patch = siteSchema.parse(await body(req))
-          json(res, 200, store.setSite(patch)); return
+          const savedSite = store.setSite(patch)
+          audit('admin_site_updated', { admin, changed: Object.keys(patch) })
+          json(res, 200, savedSite); return
         }
       }
       throw new ApiError('METHOD_NOT_FOUND', 404)

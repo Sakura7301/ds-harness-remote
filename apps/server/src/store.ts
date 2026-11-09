@@ -410,10 +410,13 @@ export class Store {
     const owner = accountKey(account)
     if (!Object.hasOwn(this.state.accounts, owner)) throw new ApiError('MEMBERSHIP_REQUIRED', 403)
     const old = this.state.devices[descriptor.deviceId]
-    if (old?.revoked) throw new ApiError('DEVICE_REVOKED', 403)
-    if (old && old.account !== owner) throw new ApiError('PEER_IDENTITY_MISMATCH', 409)
-    if (old && (old.descriptor.identityKey !== descriptor.identityKey || old.descriptor.role !== descriptor.role)) throw new ApiError('PEER_IDENTITY_MISMATCH', 409)
-    if (!old && this.list(owner).length >= ACCOUNT_MAX_DEVICES) throw new ApiError('RATE_LIMITED', 429)
+    if (old !== undefined && old.account !== owner) throw new ApiError('PEER_IDENTITY_MISMATCH', 409)
+    // A revoked device belongs to its account: an account-authenticated
+    // registration may reclaim it (re-authorization after sign-out/revoke)
+    // instead of forcing the user to delete local credentials.
+    const reclaiming = old !== undefined && old.revoked
+    if (old !== undefined && !old.revoked && (old.descriptor.identityKey !== descriptor.identityKey || old.descriptor.role !== descriptor.role)) throw new ApiError('PEER_IDENTITY_MISMATCH', 409)
+    if ((old === undefined || reclaiming) && this.list(owner).length >= ACCOUNT_MAX_DEVICES) throw new ApiError('RATE_LIMITED', 429)
     this.state.devices[descriptor.deviceId] = { descriptor, revoked: false, lastSeenAt: old?.lastSeenAt ?? 0, account: owner }
     this.invalidate(descriptor.deviceId)
     return this.issue(descriptor.deviceId, owner)
@@ -438,11 +441,16 @@ export class Store {
     return device
   }
   refresh(deviceId: string, token: string) {
-    const device = this.get(deviceId)
+    // Authenticate the token before looking at the device. A device whose record
+    // was deleted (or an old client holding a stale token) must hear AUTH_INVALID:
+    // clients treat that as "sign in again", while DEVICE_NOT_FOUND is retryable
+    // for the Remote plugin and would leave it looping on the error forever.
     const record = this.state.tokens[hash(token)]
-    if (!record || record.kind !== 'refresh' || record.deviceId !== deviceId || record.account !== device.account) throw new ApiError('AUTH_INVALID', 401)
+    if (!record || record.kind !== 'refresh' || record.deviceId !== deviceId) throw new ApiError('AUTH_INVALID', 401)
     if (record.expires <= Date.now()) throw new ApiError('TOKEN_EXPIRED', 401)
     if (record.used) { this.invalidate(deviceId); throw new ApiError('AUTH_INVALID', 401) }
+    const device = this.get(record.deviceId)
+    if (record.account !== device.account) throw new ApiError('AUTH_INVALID', 401)
     record.used = true
     return this.issue(deviceId, device.account, record.expires)
   }

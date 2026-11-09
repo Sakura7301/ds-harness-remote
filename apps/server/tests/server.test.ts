@@ -1210,6 +1210,30 @@ describe('multi-account registration and isolation', () => {
   })
 })
 
+describe('plugin-compatible re-authorization', () => {
+  it('lets the owning account reclaim a revoked device instead of forcing a local credential reset', async () => {
+    const first = await device()
+    expect((await request('/devices/self', 'DELETE', undefined, first.accessToken)).status).toBe(200)
+    // The revoked credential can no longer authenticate.
+    expect((await request('/devices', 'GET', undefined, first.accessToken)).status).toBe(401)
+    // Signing in again registers the same device id without a PEER_IDENTITY_MISMATCH.
+    const again = await request('/devices/register', 'POST', {
+      v: 1,
+      device: { deviceId: first.deviceId, identityKey: first.identityKey, name: first.name, role: first.role, platform: first.platform, clientVersion: first.clientVersion },
+    }, accountToken)
+    expect(again.status).toBe(200)
+    expect(typeof again.data.accessToken).toBe('string')
+    const listed = await request('/account/devices', 'GET', undefined, accountToken)
+    expect(listed.data.items.some((item: { deviceId: string }) => item.deviceId === first.deviceId)).toBe(true)
+  })
+  it('reports a stale refresh token as AUTH_INVALID rather than DEVICE_NOT_FOUND', async () => {
+    const target = await device()
+    const stale = await request('/auth/refresh', 'POST', { deviceId: target.deviceId, refreshToken: 'stale-token-value' })
+    expect(stale.status).toBe(401)
+    expect(stale.data.error.code).toBe('AUTH_INVALID')
+  })
+})
+
 describe('administrator console, usernames and email codes', () => {
   async function startWithMailer() {
     const sent: { to: string; subject: string; text: string }[] = []
@@ -1326,6 +1350,11 @@ describe('administrator console, usernames and email codes', () => {
     expect((await request(`/account/devices/${target.deviceId}/delete/code`, 'POST', {}, userToken)).status).toBe(200)
     expect((await request(`/account/devices/${target.deviceId}`, 'DELETE', { code: codeIn(sent[sent.length - 1]!.text) }, userToken)).status).toBe(200)
     expect((await request('/account/devices', 'GET', undefined, userToken)).data.items).toHaveLength(0)
+    // A client whose device record is gone must be told its credential is dead,
+    // which is what makes the plugin clear it and prompt for a new sign-in.
+    const afterDelete = await request('/auth/refresh', 'POST', { deviceId: target.deviceId, refreshToken: target.refreshToken })
+    expect(afterDelete.status).toBe(401)
+    expect(afterDelete.data.error.code).toBe('AUTH_INVALID')
     const again = await request('/devices/register', 'POST', {
       v: 1,
       device: { deviceId: target.deviceId, identityKey: target.identityKey, name: target.name, role: target.role, platform: target.platform, clientVersion: target.clientVersion },
